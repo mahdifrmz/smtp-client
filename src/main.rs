@@ -165,7 +165,57 @@ where
     }
 }
 
+struct Mail {
+    subject: String,
+    from: String,
+    to: String,
+    text: String,
+}
+
+struct Credentials {
+    username: String,
+    password: String,
+}
+
+struct Server {
+    address: String,
+    port: u16,
+    meta: ServerMeta,
+}
+
+enum Support {
+    Supported,
+    NotSupported,
+    Unknown,
+}
+
+struct ServerMeta {
+    utf8: Support,
+    auth_plain: Support,
+    tls: Support,
+    pipelining: Support,
+}
+
+struct Mailer {}
+
+impl Mailer {
+    fn connect(server: Server, credentials: Credentials) {}
+    fn disconnect() {}
+    fn send(mail: Mail) {}
+}
+
 fn main() {
+    /*
+        todo:
+            PIPELINING
+            MORE AUTH METHODS
+            UTF8
+            MIME
+        Done:
+            TLS
+            AUTH PLAIN
+    */
+
     /*
        - read .toml email file
        - for each server
