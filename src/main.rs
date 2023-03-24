@@ -7,7 +7,6 @@ use std::{
 use base64::{engine::general_purpose, Engine};
 use rustls::{OwnedTrustAnchor, RootCertStore};
 
-type TlsStream<'a> = rustls::Stream<'a, rustls::ClientConnection, TcpStream>;
 type TlsCon = rustls::ClientConnection;
 
 fn create_tls_conn(server_address: &str) -> TlsCon {
@@ -27,7 +26,7 @@ fn create_tls_conn(server_address: &str) -> TlsCon {
     return TlsCon::new(Arc::new(config), server_address.try_into().unwrap()).unwrap();
 }
 
-struct SmtpParser<'a, T>
+struct Parser<'a, T>
 where
     T: Read,
 {
@@ -43,7 +42,7 @@ enum SmtpErr {
 
 type SmtpResult<T> = Result<T, SmtpErr>;
 
-impl<'a, T> SmtpParser<'a, T>
+impl<'a, T> Parser<'a, T>
 where
     T: Read,
 {
@@ -92,7 +91,7 @@ where
             }
         }
     }
-    fn recv_line(&mut self) -> SmtpResult<SmtpLine> {
+    fn recv_line(&mut self) -> SmtpResult<Line> {
         self.recv_char()?;
         let d1 = self.recv_digit()? as u32;
         let d2 = self.recv_digit()? as u32;
@@ -106,13 +105,13 @@ where
             self.expect_end()?;
             String::new()
         };
-        Ok(SmtpLine {
+        Ok(Line {
             text,
             code,
             last: next == ' ',
         })
     }
-    fn recv_reply(&mut self) -> SmtpResult<Vec<SmtpLine>> {
+    fn recv_reply(&mut self) -> SmtpResult<Vec<Line>> {
         let mut lines = vec![self.recv_line()?];
         while !lines[lines.len() - 1].last {
             lines.push(self.recv_line()?);
@@ -120,8 +119,8 @@ where
         Ok(lines)
     }
 
-    fn new(stream: &'a mut T) -> SmtpParser<'a, T> {
-        let parser = SmtpParser {
+    fn new(stream: &'a mut T) -> Parser<'a, T> {
+        let parser = Parser {
             stream,
             next_char: '\0',
         };
@@ -129,7 +128,7 @@ where
     }
 }
 
-struct SmtpLine {
+struct Line {
     code: u32,
     text: String,
     last: bool,
@@ -144,11 +143,11 @@ fn get_auth_plain(username: &str, password: &str) -> String {
     general_purpose::STANDARD.encode(s)
 }
 
-fn _recv_reply<T>(stream: &mut T) -> SmtpResult<Vec<SmtpLine>>
+fn _recv_reply<T>(stream: &mut T) -> SmtpResult<Vec<Line>>
 where
     T: Read,
 {
-    let mut parser = SmtpParser::new(stream);
+    let mut parser = Parser::new(stream);
     parser.recv_reply()
 }
 fn recv_reply<T>(stream: &mut T)
@@ -192,12 +191,10 @@ fn main() {
 
     let mut con = create_tls_conn(server_address);
     let mut tls = rustls::Stream::new(&mut con, &mut client);
-    println!("----------\n");
 
     tls.write("ehlo mee\n".as_bytes()).unwrap();
     recv_reply(&mut tls);
     let userpass = get_auth_plain(username, password);
-    println!("==============> {}\n", userpass);
     tls.write(format!("AUTH PLAIN {}\n", userpass).as_bytes())
         .unwrap();
     recv_reply(&mut tls);
