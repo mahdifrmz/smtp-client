@@ -258,7 +258,18 @@ impl Mailer {
         self.tlscon = Some(con);
         Ok(())
     }
-    fn disconnect() {}
+    fn disconnect(&mut self) -> SmtpResult<()> {
+        let mut tls =
+            rustls::Stream::new(self.tlscon.as_mut().unwrap(), self.stream.as_mut().unwrap());
+        tls.write("QUIT\r\n".as_bytes()).unwrap();
+        recv_reply(&mut tls);
+        self.stream
+            .as_mut()
+            .unwrap()
+            .shutdown(std::net::Shutdown::Both)
+            .map_err(|_| SmtpErr::Network)?;
+        Ok(())
+    }
     fn send(&mut self, mail: Mail) -> SmtpResult<()> {
         let mut tls =
             rustls::Stream::new(self.tlscon.as_mut().unwrap(), self.stream.as_mut().unwrap());
@@ -319,4 +330,5 @@ fn main() {
             text: "salam!".to_string(),
         })
         .unwrap();
+    mailer.disconnect().unwrap();
 }
