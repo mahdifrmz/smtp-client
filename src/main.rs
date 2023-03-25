@@ -39,6 +39,7 @@ where
 enum SmtpErr {
     Protocol,
     ServerUnreachable,
+    ServerUnavailable,
     InvalidServer,
     Network,
     InvalidCred,
@@ -397,25 +398,38 @@ impl Mailer {
         self.stream.as_mut().unwrap()
     }
     fn recv_reply(&mut self) -> SmtpResult<Vec<Line>> {
-        if self.is_tls() {
+        let lines = if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
             let mut tls = rustls::Stream::new(&mut tlscon, self.stream());
-            let r = stream_recv_reply(&mut tls);
+            let lines = stream_recv_reply(&mut tls)?;
             self.tlscon = Some(tlscon);
-            r
+            lines
         } else {
-            stream_recv_reply(self.stream())
+            stream_recv_reply(self.stream())?
+        };
+        for l in lines.iter() {
+            if l.code == StatusCode::ServiceNotAvailable {
+                self.close();
+                return Err(SmtpErr::ServerUnavailable);
+            }
         }
+        Ok(lines)
     }
     fn recv_line(&mut self) -> SmtpResult<Line> {
-        if self.is_tls() {
+        let line = if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
             let mut tls = rustls::Stream::new(&mut tlscon, self.stream());
-            let r = stream_recv_line(&mut tls);
+            let line = stream_recv_line(&mut tls)?;
             self.tlscon = Some(tlscon);
-            r
+            line
         } else {
-            stream_recv_line(self.stream())
+            stream_recv_line(self.stream())?
+        };
+        if line.code == StatusCode::ServiceNotAvailable {
+            self.close();
+            Err(SmtpErr::ServerUnavailable)
+        } else {
+            Ok(line)
         }
     }
     fn write(&mut self, data: &[u8]) -> SmtpResult<()> {
@@ -525,17 +539,21 @@ impl Mailer {
         }
         Ok(())
     }
+    fn close(&mut self) {
+        if let Some(stream) = self.stream.as_mut() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        self.stream.take();
+        self.tlscon.take();
+        self.server.meta = ServerMeta::new();
+    }
     fn disconnect(&mut self) -> SmtpResult<()> {
         if self.stream.is_some() {
             self.send(Command::Quit)?;
         }
         self.recv_line()?
             .expect(StatusCode::ServiceClosingChannel)?;
-        if let Some(stream) = self.stream.as_mut() {
-            stream
-                .shutdown(std::net::Shutdown::Both)
-                .map_err(|_| SmtpErr::Network)?;
-        }
+        self.close();
         Ok(())
     }
     fn mail_from(&mut self, from: &String) -> SmtpResult<()> {
@@ -589,7 +607,6 @@ fn main() {
             ! address validation
             ! dot stuffing
             ! forward-path
-            ! 421
             ! transaction-failed
         Done:
             TLS
