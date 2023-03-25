@@ -37,8 +37,11 @@ where
 
 #[derive(Debug)]
 enum SmtpErr {
-    Syntax,
+    Protocol,
+    ServerUnreachable,
+    InvalidServer,
     Network,
+    Unavailable,
 }
 
 type SmtpResult<T> = Result<T, SmtpErr>;
@@ -60,7 +63,7 @@ where
     fn recv_digit(&mut self) -> SmtpResult<u8> {
         let c = self.recv_char()?;
         if c > '9' || c < '0' {
-            Err(SmtpErr::Syntax)
+            Err(SmtpErr::Protocol)
         } else {
             Ok((c as u8) - ('0' as u8))
         }
@@ -70,7 +73,7 @@ where
         if c == exp {
             Ok(())
         } else {
-            Err(SmtpErr::Syntax)
+            Err(SmtpErr::Protocol)
         }
     }
     fn expect_end(&mut self) -> SmtpResult<()> {
@@ -78,7 +81,7 @@ where
         if self.peek_char() == '\n' {
             Ok(())
         } else {
-            Err(SmtpErr::Syntax)
+            Err(SmtpErr::Protocol)
         }
     }
     fn recv_text(&mut self) -> SmtpResult<String> {
@@ -108,7 +111,7 @@ where
         };
         Ok(Line {
             text,
-            code,
+            code: status_code(code).ok_or_else(|| SmtpErr::Protocol)?,
             last: next == ' ',
         })
     }
@@ -130,7 +133,7 @@ where
 }
 
 struct Line {
-    code: u32,
+    code: StatusCode,
     text: String,
     last: bool,
 }
@@ -144,22 +147,34 @@ fn get_auth_plain(username: &str, password: &str) -> String {
     general_purpose::STANDARD.encode(s)
 }
 
-fn _recv_reply<T>(stream: &mut T) -> SmtpResult<Vec<Line>>
+fn recv_reply<T>(stream: &mut T) -> SmtpResult<Vec<Line>>
 where
     T: Read,
 {
     let mut parser = Parser::new(stream);
     parser.recv_reply()
 }
-fn recv_reply<T>(stream: &mut T)
+fn recv_line<T>(stream: &mut T) -> SmtpResult<Line>
 where
     T: Read,
 {
-    let rep = _recv_reply(stream).unwrap();
+    let mut parser = Parser::new(stream);
+    let line = parser.recv_line()?;
+    if !line.last {
+        Err(SmtpErr::Protocol)
+    } else {
+        Ok(line)
+    }
+}
+fn log_reply<T>(stream: &mut T)
+where
+    T: Read,
+{
+    let rep = recv_reply(stream).unwrap();
     for l in rep {
         println!(
             "SERVER -> {}{}{}",
-            l.code,
+            l.code as u32,
             if l.last { ' ' } else { '-' },
             l.text,
         );
@@ -201,6 +216,7 @@ struct ServerMeta {
 }
 
 struct Mailer {
+    name: String,
     server: Server,
     tlscon: Option<TlsCon>,
     stream: Option<TcpStream>,
@@ -253,6 +269,7 @@ impl ToString for Command {
     }
 }
 
+#[derive(PartialEq, Eq)]
 enum StatusCode {
     SystemStatus = 211,
     HelpMessage = 214,
@@ -279,9 +296,39 @@ enum StatusCode {
     ParamsNotRecognized = 555,
 }
 
+fn status_code(code: u32) -> Option<StatusCode> {
+    match code {
+        211 => Some(StatusCode::SystemStatus),
+        214 => Some(StatusCode::HelpMessage),
+        220 => Some(StatusCode::ServiceReady),
+        221 => Some(StatusCode::ServiceClosingChannel),
+        250 => Some(StatusCode::RequestedMailActionOkay),
+        251 => Some(StatusCode::UserNotLocal),
+        252 => Some(StatusCode::CanNotVrfyButWillAttemp),
+        354 => Some(StatusCode::StartMailInput),
+        421 => Some(StatusCode::ServiceNotAvailable),
+        450 => Some(StatusCode::MailboxUnavailable),
+        451 => Some(StatusCode::LocalError),
+        452 => Some(StatusCode::InsufficientStorage),
+        455 => Some(StatusCode::AccomodateParams),
+        501 => Some(StatusCode::SyntaxError),
+        502 => Some(StatusCode::CommandNotImplemented),
+        503 => Some(StatusCode::BadSequence),
+        504 => Some(StatusCode::ParamNotImplemented),
+        550 => Some(StatusCode::NoAccess),
+        551 => Some(StatusCode::UserNotLocalError),
+        552 => Some(StatusCode::ExeededAllocation),
+        553 => Some(StatusCode::MailBoxNameNotAllowed),
+        554 => Some(StatusCode::TransactionFailed),
+        555 => Some(StatusCode::ParamsNotRecognized),
+        _ => None,
+    }
+}
+
 impl Mailer {
     fn new(server: Server) -> Mailer {
         Mailer {
+            name: "me".to_string(),
             server,
             tlscon: None,
             stream: None,
@@ -299,37 +346,47 @@ impl Mailer {
             .map_err(|_| SmtpErr::Network)?;
         Ok(())
     }
-    fn connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
-        let client_name = "me".to_string();
+    fn init_connection(&mut self) -> SmtpResult<()> {
         let client = TcpStream::connect(format!("{}:{}", self.server.address, self.server.port))
-            .map_err(|_| SmtpErr::Network)?;
+            .map_err(|_| SmtpErr::ServerUnreachable)?;
 
         self.stream = Some(client);
         self.set_time_out(5)?;
 
-        recv_reply(self.stream());
+        let rep = recv_line(self.stream()).map_err(|_| SmtpErr::InvalidServer)?;
+        if rep.code == StatusCode::ServiceNotAvailable {
+            Err(SmtpErr::Unavailable)
+        } else if rep.code != StatusCode::ServiceReady {
+            Err(SmtpErr::Protocol)
+        } else {
+            Ok(())
+        }
+    }
+    fn connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
+        self.init_connection()?;
+        let name = self.name.clone();
         self.stream()
-            .write(Command::Ehlo(client_name.clone()).to_string().as_bytes())
+            .write(Command::Ehlo(name.clone()).to_string().as_bytes())
             .unwrap();
-        recv_reply(self.stream());
+        log_reply(self.stream());
         self.stream()
             .write(Command::StartTls.to_string().as_bytes())
             .unwrap();
-        recv_reply(self.stream());
+        log_reply(self.stream());
 
         let mut con = create_tls_conn(self.server.address.as_str());
         let mut tls = rustls::Stream::new(&mut con, self.stream());
 
-        tls.write(Command::Ehlo(client_name).to_string().as_bytes())
+        tls.write(Command::Ehlo(name.clone()).to_string().as_bytes())
             .unwrap();
-        recv_reply(&mut tls);
+        log_reply(&mut tls);
         tls.write(
             Command::AuthPlain(credentials.username.clone(), credentials.password.clone())
                 .to_string()
                 .as_bytes(),
         )
         .unwrap();
-        recv_reply(&mut tls);
+        log_reply(&mut tls);
         self.tlscon = Some(con);
         Ok(())
     }
@@ -337,7 +394,7 @@ impl Mailer {
         let mut tls =
             rustls::Stream::new(self.tlscon.as_mut().unwrap(), self.stream.as_mut().unwrap());
         tls.write(Command::Quit.to_string().as_bytes()).unwrap();
-        recv_reply(&mut tls);
+        log_reply(&mut tls);
         self.stream
             .as_mut()
             .unwrap()
@@ -350,15 +407,15 @@ impl Mailer {
             rustls::Stream::new(self.tlscon.as_mut().unwrap(), self.stream.as_mut().unwrap());
         tls.write(Command::MailFrom(mail.from.clone()).to_string().as_bytes())
             .unwrap();
-        recv_reply(&mut tls);
+        log_reply(&mut tls);
         tls.write(Command::RcptTo(mail.to.clone()).to_string().as_bytes())
             .unwrap();
-        recv_reply(&mut tls);
+        log_reply(&mut tls);
         tls.write(Command::Data.to_string().as_bytes()).unwrap();
-        recv_reply(&mut tls);
+        log_reply(&mut tls);
         tls.write(format!("{}\r\n.\r\n", mail.text).as_bytes())
             .unwrap();
-        recv_reply(&mut tls);
+        log_reply(&mut tls);
         Ok(())
     }
 }
