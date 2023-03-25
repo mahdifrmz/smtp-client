@@ -177,18 +177,21 @@ struct Credentials {
     password: String,
 }
 
+#[derive(Clone)]
 struct Server {
     address: String,
     port: u16,
     meta: ServerMeta,
 }
 
+#[derive(Clone, Copy)]
 enum Support {
     Supported,
     NotSupported,
     Unknown,
 }
 
+#[derive(Clone, Copy)]
 struct ServerMeta {
     utf8: Support,
     auth_plain: Support,
@@ -196,12 +199,82 @@ struct ServerMeta {
     pipelining: Support,
 }
 
-struct Mailer {}
+struct Mailer {
+    server: Server,
+    tlscon: Option<TlsCon>,
+    stream: Option<TcpStream>,
+}
+
+impl Server {
+    fn new(address: &str, port: u16) -> Server {
+        Server {
+            address: address.to_owned(),
+            port,
+            meta: ServerMeta::new(),
+        }
+    }
+}
+
+impl ServerMeta {
+    fn new() -> ServerMeta {
+        ServerMeta {
+            utf8: Support::Unknown,
+            auth_plain: Support::Unknown,
+            tls: Support::Unknown,
+            pipelining: Support::Unknown,
+        }
+    }
+}
 
 impl Mailer {
-    fn connect(server: Server, credentials: Credentials) {}
+    fn new(server: Server) -> Mailer {
+        Mailer {
+            server,
+            tlscon: None,
+            stream: None,
+        }
+    }
+    fn connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
+        let server = &self.server;
+        let mut client = TcpStream::connect(format!("{}:{}", server.address, server.port))
+            .map_err(|_| SmtpErr::Network)?;
+
+        recv_reply(&mut client);
+        client.write("EHLO me\n".as_bytes()).unwrap();
+        recv_reply(&mut client);
+        client.write("starttls\n".as_bytes()).unwrap();
+        recv_reply(&mut client);
+
+        let mut con = create_tls_conn(server.address.as_str());
+        let mut tls = rustls::Stream::new(&mut con, &mut client);
+
+        tls.write("ehlo mee\n".as_bytes()).unwrap();
+        recv_reply(&mut tls);
+        let userpass = get_auth_plain(&credentials.username, &credentials.password);
+        tls.write(format!("AUTH PLAIN {}\n", userpass).as_bytes())
+            .unwrap();
+        recv_reply(&mut tls);
+        self.stream = Some(client);
+        self.tlscon = Some(con);
+        Ok(())
+    }
     fn disconnect() {}
-    fn send(mail: Mail) {}
+    fn send(&mut self, mail: Mail) -> SmtpResult<()> {
+        let mut tls =
+            rustls::Stream::new(self.tlscon.as_mut().unwrap(), self.stream.as_mut().unwrap());
+        tls.write(format!("MAIL FROM:<{}>\n", mail.from).as_bytes())
+            .unwrap();
+        recv_reply(&mut tls);
+        tls.write(format!("RCPT TO:<{}>\n", mail.to).as_bytes())
+            .unwrap();
+        recv_reply(&mut tls);
+        tls.write("DATA\n".as_bytes()).unwrap();
+        recv_reply(&mut tls);
+        tls.write(format!("{}\r\n.\r\n", mail.text).as_bytes())
+            .unwrap();
+        recv_reply(&mut tls);
+        Ok(())
+    }
 }
 
 fn main() {
@@ -211,6 +284,7 @@ fn main() {
             MORE AUTH METHODS
             UTF8
             MIME
+            ! DOT STUFFING
         Done:
             TLS
             AUTH PLAIN
@@ -227,35 +301,22 @@ fn main() {
             - QUIT
         - join All threads
     */
-    let server_address = "smtp.gmail.com";
-    let port = 25;
-    let username = "faramarzpour98@gmail.com";
-    let password = "mqtepoybaongfyic";
+    let username = "faramarzpour98@gmail.com".to_string();
+    let password = "mqtepoybaongfyic".to_string();
 
-    let mut client = TcpStream::connect(format!("{}:{}", server_address, port)).unwrap();
-    recv_reply(&mut client);
-    client.write("EHLO me\n".as_bytes()).unwrap();
-    recv_reply(&mut client);
-    client.write("starttls\n".as_bytes()).unwrap();
-    recv_reply(&mut client);
-
-    let mut con = create_tls_conn(server_address);
-    let mut tls = rustls::Stream::new(&mut con, &mut client);
-
-    tls.write("ehlo mee\n".as_bytes()).unwrap();
-    recv_reply(&mut tls);
-    let userpass = get_auth_plain(username, password);
-    tls.write(format!("AUTH PLAIN {}\n", userpass).as_bytes())
+    let mut mailer = Mailer::new(Server::new("smtp.gmail.com", 25));
+    mailer
+        .connect(Credentials {
+            username: username.clone(),
+            password,
+        })
         .unwrap();
-    recv_reply(&mut tls);
-    tls.write("MAIL FROM:<faramarzpour98@gmail.com>\n".as_bytes())
+    mailer
+        .send(Mail {
+            subject: "".to_string(),
+            from: username.clone(),
+            to: username.clone(),
+            text: "salam!".to_string(),
+        })
         .unwrap();
-    recv_reply(&mut tls);
-    tls.write("RCPT TO:<faramarzpour98@gmail.com>\n".as_bytes())
-        .unwrap();
-    recv_reply(&mut tls);
-    tls.write("DATA\n".as_bytes()).unwrap();
-    recv_reply(&mut tls);
-    tls.write("salam!\r\n.\r\n".as_bytes()).unwrap();
-    recv_reply(&mut tls);
 }
