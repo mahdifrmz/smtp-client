@@ -252,6 +252,32 @@ impl ToString for Command {
     }
 }
 
+enum StatusCode {
+    SystemStatus = 211,
+    HelpMessage = 214,
+    ServiceReady = 220,
+    ServiceClosingChannel = 221,
+    RequestedMailActionOkay = 250,
+    UserNotLocal = 251,
+    CanNotVrfyButWillAttemp = 252,
+    StartMailInput = 354,
+    ServiceNotAvailable = 421,
+    MailboxUnavailable = 450,
+    LocalError = 451,
+    InsufficientStorage = 452,
+    AccomodateParams = 455,
+    SyntaxError = 501,
+    CommandNotImplemented = 502,
+    BadSequence = 503,
+    ParamNotImplemented = 504,
+    NoAccess = 550,
+    UserNotLocalError = 551,
+    ExeededAllocation = 552,
+    MailBoxNameNotAllowed = 553,
+    TransactionFailed = 554,
+    ParamsNotRecognized = 555,
+}
+
 impl Mailer {
     fn new(server: Server) -> Mailer {
         Mailer {
