@@ -41,8 +41,10 @@ enum SmtpErr {
     ServerUnreachable,
     InvalidServer,
     Network,
-    Unavailable,
     InvalidCred,
+    Policy,
+    MailBoxName,
+    Forward(String),
 }
 
 type SmtpResult<T> = Result<T, SmtpErr>;
@@ -187,20 +189,6 @@ where
         Err(SmtpErr::Protocol)
     } else {
         Ok(line)
-    }
-}
-fn log_reply<T>(stream: &mut T)
-where
-    T: Read,
-{
-    let rep = stream_recv_reply(stream).unwrap();
-    for l in rep {
-        println!(
-            "SERVER -> {}{}{}",
-            l.code as u32,
-            if l.last { ' ' } else { '-' },
-            l.text,
-        );
     }
 }
 
@@ -430,19 +418,20 @@ impl Mailer {
             stream_recv_line(self.stream())
         }
     }
-    fn send(&mut self, data: Command) -> SmtpResult<()> {
+    fn write(&mut self, data: &[u8]) -> SmtpResult<()> {
         if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
             rustls::Stream::new(&mut tlscon, self.stream())
-                .write(data.to_string().as_bytes())
+                .write(data)
                 .map_err(|_| SmtpErr::Network)?;
             self.tlscon = Some(tlscon);
         } else {
-            self.stream()
-                .write(data.to_string().as_bytes())
-                .map_err(|_| SmtpErr::Network)?;
+            self.stream().write(data).map_err(|_| SmtpErr::Network)?;
         }
         Ok(())
+    }
+    fn send(&mut self, cmd: Command) -> SmtpResult<()> {
+        self.write(cmd.to_string().as_bytes())
     }
     fn set_time_out(&mut self, seconds: u64) -> SmtpResult<()> {
         self.stream()
@@ -461,9 +450,7 @@ impl Mailer {
         self.set_time_out(5)?;
 
         let rep = self.recv_line().map_err(|_| SmtpErr::InvalidServer)?;
-        if rep.code == StatusCode::ServiceNotAvailable {
-            Err(SmtpErr::Unavailable)
-        } else if rep.code != StatusCode::ServiceReady {
+        if rep.code != StatusCode::ServiceReady {
             Err(SmtpErr::Protocol)
         } else {
             Ok(())
@@ -539,29 +526,56 @@ impl Mailer {
         Ok(())
     }
     fn disconnect(&mut self) -> SmtpResult<()> {
-        self.send(Command::Quit).unwrap();
-        self.stream
-            .as_mut()
-            .unwrap()
-            .shutdown(std::net::Shutdown::Both)
-            .map_err(|_| SmtpErr::Network)?;
+        if self.stream.is_some() {
+            self.send(Command::Quit)?;
+        }
+        self.recv_line()?
+            .expect(StatusCode::ServiceClosingChannel)?;
+        if let Some(stream) = self.stream.as_mut() {
+            stream
+                .shutdown(std::net::Shutdown::Both)
+                .map_err(|_| SmtpErr::Network)?;
+        }
         Ok(())
     }
+    fn mail_from(&mut self, from: &String) -> SmtpResult<()> {
+        self.send(Command::MailFrom(from.clone()))?;
+        let line = self.recv_line()?;
+        match line.code {
+            StatusCode::Okay => Ok(()),
+            StatusCode::NoAccess => Err(SmtpErr::Policy),
+            StatusCode::MailBoxNameNotAllowed => Err(SmtpErr::MailBoxName),
+            _ => Err(SmtpErr::Protocol),
+        }
+    }
+    fn mail_to(&mut self, to: &String) -> SmtpResult<()> {
+        self.send(Command::RcptTo(to.clone()))?;
+        let line = self.recv_line()?;
+        match line.code {
+            StatusCode::Okay | StatusCode::UserNotLocal => Ok(()),
+            StatusCode::NoAccess | StatusCode::MailboxUnavailable => Err(SmtpErr::Policy),
+            StatusCode::MailBoxNameNotAllowed => Err(SmtpErr::MailBoxName),
+            StatusCode::UserNotLocalError => Err(SmtpErr::Forward(line.text.clone())),
+            _ => Err(SmtpErr::Protocol),
+        }
+    }
+    fn mail_data(&mut self, content: &String) -> SmtpResult<()> {
+        self.send(Command::Data)?;
+        let line = self.recv_line()?;
+        line.expect(StatusCode::StartMailInput)?;
+        self.write(content.as_bytes())?;
+        self.write("\r\n.\r\n".as_bytes())?;
+        let line = self.recv_line()?;
+        match line.code {
+            StatusCode::Okay => Ok(()),
+            StatusCode::NoAccess | StatusCode::MailboxUnavailable => Err(SmtpErr::Policy),
+            _ => Err(SmtpErr::Protocol),
+        }
+    }
     fn send_mail(&mut self, mail: Mail) -> SmtpResult<()> {
-        let mut tls =
-            rustls::Stream::new(self.tlscon.as_mut().unwrap(), self.stream.as_mut().unwrap());
-        tls.write(Command::MailFrom(mail.from.clone()).to_string().as_bytes())
-            .unwrap();
-        log_reply(&mut tls);
-        tls.write(Command::RcptTo(mail.to.clone()).to_string().as_bytes())
-            .unwrap();
-        log_reply(&mut tls);
-        tls.write(Command::Data.to_string().as_bytes()).unwrap();
-        log_reply(&mut tls);
-        tls.write(format!("{}\r\n.\r\n", mail.text).as_bytes())
-            .unwrap();
-        log_reply(&mut tls);
-        Ok(())
+        self.mail_from(&mail.from)?;
+        self.mail_to(&mail.to)?;
+        self.mail_data(&mail.text)
     }
 }
 
@@ -574,6 +588,9 @@ fn main() {
             MIME
             ! address validation
             ! dot stuffing
+            ! forward-path
+            ! 421
+            ! transaction-failed
         Done:
             TLS
             AUTH PLAIN
