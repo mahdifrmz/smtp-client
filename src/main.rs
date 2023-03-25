@@ -138,6 +138,28 @@ struct Line {
     last: bool,
 }
 
+impl Line {
+    fn syn(&self) -> SmtpResult<()> {
+        let code = self.code;
+        if code == StatusCode::SyntaxError
+            || code == StatusCode::CommandNotImplemented
+            || code == StatusCode::BadSequence
+            || code == StatusCode::ParamNotImplemented
+        {
+            Err(SmtpErr::Protocol)
+        } else {
+            Ok(())
+        }
+    }
+    fn expect(&self, code: StatusCode) -> SmtpResult<()> {
+        if self.code != code {
+            Err(SmtpErr::Protocol)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 fn get_auth_plain(username: &str, password: &str) -> String {
     let mut s = vec![];
     s.push(0u8);
@@ -200,7 +222,7 @@ struct Server {
     meta: ServerMeta,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Support {
     Supported,
     NotSupported,
@@ -269,13 +291,13 @@ impl ToString for Command {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 enum StatusCode {
     SystemStatus = 211,
     HelpMessage = 214,
     ServiceReady = 220,
     ServiceClosingChannel = 221,
-    RequestedMailActionOkay = 250,
+    Okay = 250,
     UserNotLocal = 251,
     CanNotVrfyButWillAttemp = 252,
     StartMailInput = 354,
@@ -302,7 +324,7 @@ fn status_code(code: u32) -> Option<StatusCode> {
         214 => Some(StatusCode::HelpMessage),
         220 => Some(StatusCode::ServiceReady),
         221 => Some(StatusCode::ServiceClosingChannel),
-        250 => Some(StatusCode::RequestedMailActionOkay),
+        250 => Some(StatusCode::Okay),
         251 => Some(StatusCode::UserNotLocal),
         252 => Some(StatusCode::CanNotVrfyButWillAttemp),
         354 => Some(StatusCode::StartMailInput),
@@ -334,6 +356,20 @@ impl Mailer {
             stream: None,
         }
     }
+    fn send(&mut self, data: Command) -> SmtpResult<()> {
+        if self.is_tls() {
+            let mut tlscon = self.tlscon.take().unwrap();
+            rustls::Stream::new(&mut tlscon, self.stream())
+                .write(data.to_string().as_bytes())
+                .map_err(|_| SmtpErr::Network)?;
+            self.tlscon = Some(tlscon);
+        } else {
+            self.stream()
+                .write(data.to_string().as_bytes())
+                .map_err(|_| SmtpErr::Network)?;
+        }
+        Ok(())
+    }
     fn stream(&mut self) -> &mut TcpStream {
         self.stream.as_mut().unwrap()
     }
@@ -362,39 +398,90 @@ impl Mailer {
             Ok(())
         }
     }
-    fn connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
-        self.init_connection()?;
+    fn is_tls(&self) -> bool {
+        self.tlscon.is_some()
+    }
+    fn recv_reply(&mut self) -> SmtpResult<Vec<Line>> {
+        if self.is_tls() {
+            let mut tlscon = self.tlscon.take().unwrap();
+            let mut tls = rustls::Stream::new(&mut tlscon, self.stream());
+            recv_reply(&mut tls)
+        } else {
+            recv_reply(self.stream())
+        }
+    }
+    fn recv_line(&mut self) -> SmtpResult<Line> {
+        if self.is_tls() {
+            let mut tlscon = self.tlscon.take().unwrap();
+            let mut tls = rustls::Stream::new(&mut tlscon, self.stream());
+            recv_line(&mut tls)
+        } else {
+            recv_line(self.stream())
+        }
+    }
+    fn handshake(&mut self) -> SmtpResult<()> {
         let name = self.name.clone();
-        self.stream()
-            .write(Command::Ehlo(name.clone()).to_string().as_bytes())
-            .unwrap();
-        log_reply(self.stream());
-        self.stream()
-            .write(Command::StartTls.to_string().as_bytes())
-            .unwrap();
-        log_reply(self.stream());
 
+        self.send(Command::Ehlo(name.clone()))?;
+        let rep = recv_reply(self.stream())?;
+        self.server.meta.tls = Support::NotSupported;
+        if self.is_tls() {
+            self.server.meta.auth_plain = Support::NotSupported;
+        }
+
+        for l in rep.iter() {
+            l.expect(StatusCode::Okay)?;
+            if l.text == "STARTTLS" {
+                self.server.meta.tls = Support::Supported;
+            } else if l.text == "8BITMIME" {
+                self.server.meta.utf8 = Support::Supported
+            } else if l.text == "PIPELINING" {
+                self.server.meta.pipelining = Support::Supported;
+            } else {
+                let words: Vec<&str> = l.text.split(' ').collect();
+                if words.len() == 1 {
+                    if words[0] == "AUTH" {
+                        for i in 1..words.len() {
+                            if words[i] == "PLAIN" {
+                                self.server.meta.auth_plain = Support::Supported;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    fn start_tls(&mut self) -> SmtpResult<()> {
+        self.send(Command::StartTls)?;
+        recv_line(self.stream())?.expect(StatusCode::ServiceReady)?;
         let mut con = create_tls_conn(self.server.address.as_str());
         let mut tls = rustls::Stream::new(&mut con, self.stream());
-
-        tls.write(Command::Ehlo(name.clone()).to_string().as_bytes())
-            .unwrap();
-        log_reply(&mut tls);
-        tls.write(
-            Command::AuthPlain(credentials.username.clone(), credentials.password.clone())
-                .to_string()
-                .as_bytes(),
-        )
-        .unwrap();
-        log_reply(&mut tls);
         self.tlscon = Some(con);
         Ok(())
     }
+    fn auth_plain(&mut self, credentials: Credentials) -> SmtpResult<()> {
+        self.send(Command::AuthPlain(
+            credentials.username.clone(),
+            credentials.password.clone(),
+        ))?;
+        // TODO
+        Ok(())
+    }
+    fn connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
+        self.init_connection()?;
+        self.handshake()?;
+        if self.server.meta.tls == Support::Supported {
+            self.start_tls()?;
+            self.handshake()?;
+        }
+        if self.server.meta.auth_plain == Support::Supported {
+            self.auth_plain(credentials)?;
+        }
+        Ok(())
+    }
     fn disconnect(&mut self) -> SmtpResult<()> {
-        let mut tls =
-            rustls::Stream::new(self.tlscon.as_mut().unwrap(), self.stream.as_mut().unwrap());
-        tls.write(Command::Quit.to_string().as_bytes()).unwrap();
-        log_reply(&mut tls);
+        self.send(Command::Quit).unwrap();
         self.stream
             .as_mut()
             .unwrap()
@@ -402,7 +489,7 @@ impl Mailer {
             .map_err(|_| SmtpErr::Network)?;
         Ok(())
     }
-    fn send(&mut self, mail: Mail) -> SmtpResult<()> {
+    fn send_mail(&mut self, mail: Mail) -> SmtpResult<()> {
         let mut tls =
             rustls::Stream::new(self.tlscon.as_mut().unwrap(), self.stream.as_mut().unwrap());
         tls.write(Command::MailFrom(mail.from.clone()).to_string().as_bytes())
@@ -456,7 +543,7 @@ fn main() {
         })
         .unwrap();
     mailer
-        .send(Mail {
+        .send_mail(Mail {
             subject: "".to_string(),
             from: username.clone(),
             to: username.clone(),
