@@ -2,6 +2,7 @@ use std::{
     io::{Read, Write},
     net::TcpStream,
     sync::Arc,
+    time::Duration,
 };
 
 use base64::{engine::general_purpose, Engine};
@@ -286,24 +287,38 @@ impl Mailer {
             stream: None,
         }
     }
+    fn stream(&mut self) -> &mut TcpStream {
+        self.stream.as_mut().unwrap()
+    }
+    fn set_time_out(&mut self, seconds: u64) -> SmtpResult<()> {
+        self.stream()
+            .set_read_timeout(Some(Duration::new(seconds, 0)))
+            .map_err(|_| SmtpErr::Network)?;
+        self.stream()
+            .set_write_timeout(Some(Duration::new(seconds, 0)))
+            .map_err(|_| SmtpErr::Network)?;
+        Ok(())
+    }
     fn connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
         let client_name = "me".to_string();
-        let server = &self.server;
-        let mut client = TcpStream::connect(format!("{}:{}", server.address, server.port))
+        let client = TcpStream::connect(format!("{}:{}", self.server.address, self.server.port))
             .map_err(|_| SmtpErr::Network)?;
 
-        recv_reply(&mut client);
-        client
+        self.stream = Some(client);
+        self.set_time_out(5)?;
+
+        recv_reply(self.stream());
+        self.stream()
             .write(Command::Ehlo(client_name.clone()).to_string().as_bytes())
             .unwrap();
-        recv_reply(&mut client);
-        client
+        recv_reply(self.stream());
+        self.stream()
             .write(Command::StartTls.to_string().as_bytes())
             .unwrap();
-        recv_reply(&mut client);
+        recv_reply(self.stream());
 
-        let mut con = create_tls_conn(server.address.as_str());
-        let mut tls = rustls::Stream::new(&mut con, &mut client);
+        let mut con = create_tls_conn(self.server.address.as_str());
+        let mut tls = rustls::Stream::new(&mut con, self.stream());
 
         tls.write(Command::Ehlo(client_name).to_string().as_bytes())
             .unwrap();
@@ -315,7 +330,6 @@ impl Mailer {
         )
         .unwrap();
         recv_reply(&mut tls);
-        self.stream = Some(client);
         self.tlscon = Some(con);
         Ok(())
     }
