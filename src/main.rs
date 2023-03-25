@@ -327,6 +327,38 @@ enum StatusCode {
     ParamsNotRecognized = 555,
 }
 
+enum EhloLine {
+    Pipelining,
+    StartTls,
+    EightBitMIME,
+    Auth,
+}
+
+enum AuthMech {
+    Plain,
+}
+
+impl ToString for AuthMech {
+    fn to_string(&self) -> String {
+        (match self {
+            AuthMech::Plain => "PLAIN",
+        })
+        .to_string()
+    }
+}
+
+impl ToString for EhloLine {
+    fn to_string(&self) -> String {
+        (match self {
+            EhloLine::Pipelining => "PIPELINING",
+            EhloLine::StartTls => "STARTTLS",
+            EhloLine::EightBitMIME => "8BITMIME",
+            EhloLine::Auth => "AUTH",
+        })
+        .to_string()
+    }
+}
+
 fn status_code(code: u32) -> Option<StatusCode> {
     match code {
         211 => Some(StatusCode::SystemStatus),
@@ -452,18 +484,19 @@ impl Mailer {
 
         for l in rep.iter() {
             l.expect(StatusCode::Okay)?;
-            if l.text == "STARTTLS" {
+            let text = l.text.to_uppercase();
+            if text == EhloLine::StartTls.to_string() {
                 self.server.meta.tls = Support::Supported;
-            } else if l.text == "8BITMIME" {
+            } else if text == EhloLine::EightBitMIME.to_string() {
                 self.server.meta.utf8 = Support::Supported
-            } else if l.text == "PIPELINING" {
+            } else if text == EhloLine::Pipelining.to_string() {
                 self.server.meta.pipelining = Support::Supported;
             } else {
-                let words: Vec<&str> = l.text.split(' ').collect();
+                let words: Vec<&str> = text.split(' ').collect();
                 if words.len() >= 1 {
-                    if words[0] == "AUTH" {
+                    if words[0] == EhloLine::Auth.to_string() {
                         for i in 1..words.len() {
-                            if words[i] == "PLAIN" {
+                            if words[i] == AuthMech::Plain.to_string() {
                                 self.server.meta.auth_plain = Support::Supported;
                             }
                         }
