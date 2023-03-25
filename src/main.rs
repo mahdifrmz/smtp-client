@@ -226,6 +226,32 @@ impl ServerMeta {
     }
 }
 
+enum Command {
+    Ehlo(String),
+    Quit,
+    StartTls,
+    MailFrom(String),
+    RcptTo(String),
+    Data,
+    AuthPlain(String, String),
+}
+
+impl ToString for Command {
+    fn to_string(&self) -> String {
+        let mut cmd = match self {
+            Command::Data => "DATA".to_string(),
+            Command::Ehlo(me) => format!("EHLO {}", me),
+            Command::StartTls => "STARTTLS".to_string(),
+            Command::Quit => "QUIT".to_string(),
+            Command::MailFrom(from) => format!("MAIL FROM:<{}>", from),
+            Command::RcptTo(to) => format!("RCPT TO:<{}>", to),
+            Command::AuthPlain(un, pw) => format!("AUTH PLAIN {}", get_auth_plain(un, pw)),
+        };
+        cmd.push_str("\r\n");
+        cmd
+    }
+}
+
 impl Mailer {
     fn new(server: Server) -> Mailer {
         Mailer {
@@ -235,24 +261,33 @@ impl Mailer {
         }
     }
     fn connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
+        let client_name = "me".to_string();
         let server = &self.server;
         let mut client = TcpStream::connect(format!("{}:{}", server.address, server.port))
             .map_err(|_| SmtpErr::Network)?;
 
         recv_reply(&mut client);
-        client.write("EHLO me\n".as_bytes()).unwrap();
+        client
+            .write(Command::Ehlo(client_name.clone()).to_string().as_bytes())
+            .unwrap();
         recv_reply(&mut client);
-        client.write("starttls\n".as_bytes()).unwrap();
+        client
+            .write(Command::StartTls.to_string().as_bytes())
+            .unwrap();
         recv_reply(&mut client);
 
         let mut con = create_tls_conn(server.address.as_str());
         let mut tls = rustls::Stream::new(&mut con, &mut client);
 
-        tls.write("ehlo mee\n".as_bytes()).unwrap();
-        recv_reply(&mut tls);
-        let userpass = get_auth_plain(&credentials.username, &credentials.password);
-        tls.write(format!("AUTH PLAIN {}\n", userpass).as_bytes())
+        tls.write(Command::Ehlo(client_name).to_string().as_bytes())
             .unwrap();
+        recv_reply(&mut tls);
+        tls.write(
+            Command::AuthPlain(credentials.username.clone(), credentials.password.clone())
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
         recv_reply(&mut tls);
         self.stream = Some(client);
         self.tlscon = Some(con);
@@ -261,7 +296,7 @@ impl Mailer {
     fn disconnect(&mut self) -> SmtpResult<()> {
         let mut tls =
             rustls::Stream::new(self.tlscon.as_mut().unwrap(), self.stream.as_mut().unwrap());
-        tls.write("QUIT\r\n".as_bytes()).unwrap();
+        tls.write(Command::Quit.to_string().as_bytes()).unwrap();
         recv_reply(&mut tls);
         self.stream
             .as_mut()
@@ -273,13 +308,13 @@ impl Mailer {
     fn send(&mut self, mail: Mail) -> SmtpResult<()> {
         let mut tls =
             rustls::Stream::new(self.tlscon.as_mut().unwrap(), self.stream.as_mut().unwrap());
-        tls.write(format!("MAIL FROM:<{}>\n", mail.from).as_bytes())
+        tls.write(Command::MailFrom(mail.from.clone()).to_string().as_bytes())
             .unwrap();
         recv_reply(&mut tls);
-        tls.write(format!("RCPT TO:<{}>\n", mail.to).as_bytes())
+        tls.write(Command::RcptTo(mail.to.clone()).to_string().as_bytes())
             .unwrap();
         recv_reply(&mut tls);
-        tls.write("DATA\n".as_bytes()).unwrap();
+        tls.write(Command::Data.to_string().as_bytes()).unwrap();
         recv_reply(&mut tls);
         tls.write(format!("{}\r\n.\r\n", mail.text).as_bytes())
             .unwrap();
@@ -295,7 +330,8 @@ fn main() {
             MORE AUTH METHODS
             UTF8
             MIME
-            ! DOT STUFFING
+            ! address validation
+            ! dot stuffing
         Done:
             TLS
             AUTH PLAIN
