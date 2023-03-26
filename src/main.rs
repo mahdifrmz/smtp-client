@@ -97,7 +97,12 @@ struct FileLogger {
 
 impl FileLogger {
     fn new(path: &String) -> FileLogger {
-        let file = fs::File::open(path).expect(format!("failed to open file: {}", path).as_str());
+        let file = fs::OpenOptions::new()
+            .truncate(true)
+            .write(true)
+            .create(true)
+            .open(path)
+            .expect(format!("failed to open file: {}", path).as_str());
         FileLogger {
             enabled: true,
             file: Some(file),
@@ -124,10 +129,10 @@ impl Logger for FileLogger {
         };
 
         if self.enabled {
-            if self.is_server {
-                self.is_server = false;
-                let _ = file.write("\r\nC:".as_bytes());
+            if !self.is_client {
                 self.is_client = true;
+                self.is_server = false;
+                let _ = file.write("C: ".as_bytes());
             }
             let _ = file.write(data);
         }
@@ -141,10 +146,10 @@ impl Logger for FileLogger {
         };
 
         if self.enabled {
-            if self.is_client {
-                self.is_client = false;
-                let _ = file.write("\r\nS:".as_bytes());
+            if !self.is_server {
                 self.is_server = true;
+                self.is_client = false;
+                let _ = file.write("S: ".as_bytes());
             }
             let _ = file.write(data);
         }
@@ -156,6 +161,14 @@ impl Logger for FileLogger {
 
     fn enable(&mut self) {
         self.enabled = true;
+    }
+}
+
+impl Drop for FileLogger {
+    fn drop(&mut self) {
+        if let Some(file) = self.file.as_mut() {
+            let _ = file.flush();
+        }
     }
 }
 
