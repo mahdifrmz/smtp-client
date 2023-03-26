@@ -1,6 +1,11 @@
 use serde_derive::Deserialize;
 use smtp::{Credentials, Logger, Mail, Mailer, Server};
-use std::{env::args, fs, io, process::exit};
+use std::{
+    env::args,
+    fs,
+    io::{self, Write},
+    process::exit,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -8,6 +13,7 @@ struct MailConfig {
     retries: Option<u32>,
     timeout: Option<u32>,
     parallel: Option<bool>,
+    logfile: Option<String>,
     #[serde(rename = "max-channels")]
     max_channels: Option<u32>,
 }
@@ -82,14 +88,75 @@ fn prompt_password(username: &String) -> String {
     buffer
 }
 
-#[derive(Clone)]
-struct NoLogger;
+struct FileLogger {
+    enabled: bool,
+    file: Option<fs::File>,
+    is_client: bool,
+    is_server: bool,
+}
 
-impl Logger for NoLogger {
-    fn client(&mut self, data: &[u8]) {}
-    fn server(&mut self, data: &[u8]) {}
-    fn disable() {}
-    fn enable() {}
+impl FileLogger {
+    fn new(path: &String) -> FileLogger {
+        let file = fs::File::open(path).expect(format!("failed to open file: {}", path).as_str());
+        FileLogger {
+            enabled: true,
+            file: Some(file),
+            is_client: false,
+            is_server: false,
+        }
+    }
+    fn none() -> FileLogger {
+        FileLogger {
+            enabled: false,
+            file: None,
+            is_client: false,
+            is_server: false,
+        }
+    }
+}
+
+impl Logger for FileLogger {
+    fn client(&mut self, data: &[u8]) {
+        let file = if let Some(f) = self.file.as_mut() {
+            f
+        } else {
+            return;
+        };
+
+        if self.enabled {
+            if self.is_server {
+                self.is_server = false;
+                let _ = file.write("\r\nC:".as_bytes());
+                self.is_client = true;
+            }
+            let _ = file.write(data);
+        }
+    }
+
+    fn server(&mut self, data: &[u8]) {
+        let file = if let Some(f) = self.file.as_mut() {
+            f
+        } else {
+            return;
+        };
+
+        if self.enabled {
+            if self.is_client {
+                self.is_client = false;
+                let _ = file.write("\r\nS:".as_bytes());
+                self.is_server = true;
+            }
+            let _ = file.write(data);
+        }
+    }
+
+    fn disable(&mut self) {
+        self.enabled = false;
+    }
+
+    fn enable(&mut self) {
+        self.enabled = true;
+    }
 }
 
 fn main() {
@@ -114,7 +181,19 @@ fn main() {
         .clone()
         .unwrap_or_else(|| prompt_password(&username));
 
-    let mut mailer = Mailer::new(Server::from(&mail_file.server), NoLogger);
+    let logger = if let Some(logfile) = mail_file
+        .config
+        .as_ref()
+        .map(|c| c.logfile.clone())
+        .flatten()
+    {
+        FileLogger::new(&logfile)
+    } else {
+        FileLogger::none()
+    };
+
+    let server = Server::from(&mail_file.server);
+    let mut mailer = Mailer::new(server, logger);
     mailer
         .connect(Credentials::new(username, password))
         .unwrap();

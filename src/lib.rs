@@ -27,11 +27,11 @@ fn create_tls_conn(server_address: &str) -> TlsCon {
     return TlsCon::new(Arc::new(config), server_address.try_into().unwrap()).unwrap();
 }
 
-pub trait Logger: Clone {
+pub trait Logger {
     fn client(&mut self, data: &[u8]);
     fn server(&mut self, data: &[u8]);
-    fn disable();
-    fn enable();
+    fn disable(&mut self);
+    fn enable(&mut self);
 }
 
 struct Parser<'a, T, L>
@@ -40,7 +40,7 @@ where
     L: Logger,
 {
     stream: &'a mut T,
-    logger: L,
+    logger: &'a mut L,
     next_char: char,
 }
 
@@ -138,7 +138,7 @@ where
         Ok(lines)
     }
 
-    fn new(stream: &'a mut T, logger: L) -> Parser<'a, T, L> {
+    fn new(stream: &'a mut T, logger: &'a mut L) -> Parser<'a, T, L> {
         let parser = Parser {
             logger,
             stream,
@@ -173,14 +173,14 @@ fn get_auth_plain(username: &str, password: &str) -> String {
     general_purpose::STANDARD.encode(s)
 }
 
-fn stream_recv_reply<T>(stream: &mut T, logger: impl Logger) -> SmtpResult<Vec<Line>>
+fn stream_recv_reply<T>(stream: &mut T, logger: &mut impl Logger) -> SmtpResult<Vec<Line>>
 where
     T: Read,
 {
     let mut parser = Parser::new(stream, logger);
     parser.recv_reply()
 }
-fn stream_recv_line<T>(stream: &mut T, logger: impl Logger) -> SmtpResult<Line>
+fn stream_recv_line<T>(stream: &mut T, logger: &mut impl Logger) -> SmtpResult<Line>
 where
     T: Read,
 {
@@ -413,15 +413,14 @@ where
         self.stream.as_mut().unwrap()
     }
     fn recv_reply(&mut self) -> SmtpResult<Vec<Line>> {
-        let logger = self.logger.clone();
         let lines = if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
-            let mut tls = rustls::Stream::new(&mut tlscon, self.stream());
-            let lines = stream_recv_reply(&mut tls, logger)?;
+            let mut tls = rustls::Stream::new(&mut tlscon, self.stream.as_mut().unwrap());
+            let lines = stream_recv_reply(&mut tls, &mut self.logger)?;
             self.tlscon = Some(tlscon);
             lines
         } else {
-            stream_recv_reply(self.stream(), logger)?
+            stream_recv_reply(self.stream.as_mut().unwrap(), &mut self.logger)?
         };
         for l in lines.iter() {
             if l.code == StatusCode::ServiceNotAvailable {
@@ -432,15 +431,14 @@ where
         Ok(lines)
     }
     fn recv_line(&mut self) -> SmtpResult<Line> {
-        let logger = self.logger.clone();
         let line = if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
-            let mut tls = rustls::Stream::new(&mut tlscon, self.stream());
-            let line = stream_recv_line(&mut tls, logger)?;
+            let mut tls = rustls::Stream::new(&mut tlscon, self.stream.as_mut().unwrap());
+            let line = stream_recv_line(&mut tls, &mut self.logger)?;
             self.tlscon = Some(tlscon);
             line
         } else {
-            stream_recv_line(self.stream(), logger)?
+            stream_recv_line(self.stream.as_mut().unwrap(), &mut self.logger)?
         };
         if line.code == StatusCode::ServiceNotAvailable {
             self.close();
