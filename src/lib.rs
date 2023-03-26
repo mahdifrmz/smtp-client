@@ -53,7 +53,7 @@ pub enum SmtpErr {
     Network,
     InvalidCred,
     Policy,
-    MailBoxName,
+    MailBoxName(String),
     Forward(String),
 }
 
@@ -396,6 +396,16 @@ fn status_code(code: u32) -> Option<StatusCode> {
     }
 }
 
+pub fn check_address(address: &str) -> SmtpResult<()> {
+    regex::Regex::new(
+        r"^([a-z0-9_+]([a-z0-9_+.]*[a-z0-9_+])?)@([a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,6})",
+    )
+    .unwrap()
+    .captures(address)
+    .map(|_| ())
+    .ok_or(SmtpErr::MailBoxName(address.to_string()))
+}
+
 impl<L> Mailer<L>
 where
     L: Logger,
@@ -578,7 +588,7 @@ where
         match line.code {
             StatusCode::Okay => Ok(()),
             StatusCode::NoAccess => Err(SmtpErr::Policy),
-            StatusCode::MailBoxNameNotAllowed => Err(SmtpErr::MailBoxName),
+            StatusCode::MailBoxNameNotAllowed => Err(SmtpErr::MailBoxName(from.to_string())),
             _ => Err(SmtpErr::Protocol),
         }
     }
@@ -588,7 +598,7 @@ where
         match line.code {
             StatusCode::Okay | StatusCode::UserNotLocal => Ok(()),
             StatusCode::NoAccess | StatusCode::MailboxUnavailable => Err(SmtpErr::Policy),
-            StatusCode::MailBoxNameNotAllowed => Err(SmtpErr::MailBoxName),
+            StatusCode::MailBoxNameNotAllowed => Err(SmtpErr::MailBoxName(to.to_string())),
             StatusCode::UserNotLocalError => Err(SmtpErr::Forward(line.text.clone())),
             _ => Err(SmtpErr::Protocol),
         }
@@ -625,6 +635,8 @@ where
         }
     }
     pub fn send_mail(&mut self, mail: Mail) -> SmtpResult<()> {
+        check_address(mail.from.as_str())?;
+        check_address(mail.to.as_str())?;
         self.mail_from(&mail.from)?;
         self.mail_to(&mail.to)?;
         self.mail_data(&mail)

@@ -222,9 +222,8 @@ fn main() {
         Ok(())
     })() {
         let mes = match e {
-            SmtpErr::Protocol | SmtpErr::MailBoxName => {
-                "There was an error on the mail server side.".to_string()
-            }
+            SmtpErr::Protocol => "There was an error on the mail server side.".to_string(),
+            SmtpErr::MailBoxName(mailbox) => format!("Invalid email address <{}>", mailbox),
             SmtpErr::ServerUnreachable => "Can't reach the server, try again later.".to_string(),
             SmtpErr::ServerUnavailable => "Server abruptly ended the connection.".to_string(),
             SmtpErr::InvalidServer => {
