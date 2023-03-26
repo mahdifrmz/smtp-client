@@ -30,6 +30,8 @@ fn create_tls_conn(server_address: &str) -> TlsCon {
 pub trait Logger: Clone {
     fn client(&mut self, data: &[u8]);
     fn server(&mut self, data: &[u8]);
+    fn disable();
+    fn enable();
 }
 
 struct Parser<'a, T, L>

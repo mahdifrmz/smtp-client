@@ -88,6 +88,8 @@ struct NoLogger;
 impl Logger for NoLogger {
     fn client(&mut self, data: &[u8]) {}
     fn server(&mut self, data: &[u8]) {}
+    fn disable() {}
+    fn enable() {}
 }
 
 fn main() {
