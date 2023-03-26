@@ -27,11 +27,18 @@ fn create_tls_conn(server_address: &str) -> TlsCon {
     return TlsCon::new(Arc::new(config), server_address.try_into().unwrap()).unwrap();
 }
 
-struct Parser<'a, T>
+pub trait Logger: Clone {
+    fn client(&mut self, data: &[u8]);
+    fn server(&mut self, data: &[u8]);
+}
+
+struct Parser<'a, T, L>
 where
     T: Read,
+    L: Logger,
 {
     stream: &'a mut T,
+    logger: L,
     next_char: char,
 }
 
@@ -50,15 +57,17 @@ pub enum SmtpErr {
 
 type SmtpResult<T> = Result<T, SmtpErr>;
 
-impl<'a, T> Parser<'a, T>
+impl<'a, T, L> Parser<'a, T, L>
 where
     T: Read,
+    L: Logger,
 {
     fn recv_char(&mut self) -> SmtpResult<char> {
         let mut buf = [0u8; 1];
         self.stream.read(&mut buf).map_err(|_| SmtpErr::Network)?;
         let c = self.next_char;
         self.next_char = buf[0] as char;
+        self.logger.server(&buf);
         Ok(c)
     }
     fn peek_char(&mut self) -> char {
@@ -127,8 +136,9 @@ where
         Ok(lines)
     }
 
-    fn new(stream: &'a mut T) -> Parser<'a, T> {
+    fn new(stream: &'a mut T, logger: L) -> Parser<'a, T, L> {
         let parser = Parser {
+            logger,
             stream,
             next_char: '\0',
         };
@@ -161,18 +171,18 @@ fn get_auth_plain(username: &str, password: &str) -> String {
     general_purpose::STANDARD.encode(s)
 }
 
-fn stream_recv_reply<T>(stream: &mut T) -> SmtpResult<Vec<Line>>
+fn stream_recv_reply<T>(stream: &mut T, logger: impl Logger) -> SmtpResult<Vec<Line>>
 where
     T: Read,
 {
-    let mut parser = Parser::new(stream);
+    let mut parser = Parser::new(stream, logger);
     parser.recv_reply()
 }
-fn stream_recv_line<T>(stream: &mut T) -> SmtpResult<Line>
+fn stream_recv_line<T>(stream: &mut T, logger: impl Logger) -> SmtpResult<Line>
 where
     T: Read,
 {
-    let mut parser = Parser::new(stream);
+    let mut parser = Parser::new(stream, logger);
     let line = parser.recv_line()?;
     if !line.last {
         parser.recv_reply()?;
@@ -222,11 +232,15 @@ struct ServerMeta {
     pipelining: Support,
 }
 
-pub struct Mailer {
+pub struct Mailer<L>
+where
+    L: Logger,
+{
     name: String,
     server: Server,
     tlscon: Option<TlsCon>,
     stream: Option<TcpStream>,
+    logger: L,
 }
 
 impl Server {
@@ -380,27 +394,32 @@ fn status_code(code: u32) -> Option<StatusCode> {
     }
 }
 
-impl Mailer {
-    pub fn new(server: Server) -> Mailer {
+impl<L> Mailer<L>
+where
+    L: Logger,
+{
+    pub fn new(server: Server, logger: L) -> Mailer<L> {
         Mailer {
             name: "me".to_string(),
             server,
             tlscon: None,
             stream: None,
+            logger,
         }
     }
     fn stream(&mut self) -> &mut TcpStream {
         self.stream.as_mut().unwrap()
     }
     fn recv_reply(&mut self) -> SmtpResult<Vec<Line>> {
+        let logger = self.logger.clone();
         let lines = if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
             let mut tls = rustls::Stream::new(&mut tlscon, self.stream());
-            let lines = stream_recv_reply(&mut tls)?;
+            let lines = stream_recv_reply(&mut tls, logger)?;
             self.tlscon = Some(tlscon);
             lines
         } else {
-            stream_recv_reply(self.stream())?
+            stream_recv_reply(self.stream(), logger)?
         };
         for l in lines.iter() {
             if l.code == StatusCode::ServiceNotAvailable {
@@ -411,14 +430,15 @@ impl Mailer {
         Ok(lines)
     }
     fn recv_line(&mut self) -> SmtpResult<Line> {
+        let logger = self.logger.clone();
         let line = if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
             let mut tls = rustls::Stream::new(&mut tlscon, self.stream());
-            let line = stream_recv_line(&mut tls)?;
+            let line = stream_recv_line(&mut tls, logger)?;
             self.tlscon = Some(tlscon);
             line
         } else {
-            stream_recv_line(self.stream())?
+            stream_recv_line(self.stream(), logger)?
         };
         if line.code == StatusCode::ServiceNotAvailable {
             self.close();
@@ -428,6 +448,7 @@ impl Mailer {
         }
     }
     fn write(&mut self, data: &[u8]) -> SmtpResult<()> {
+        self.logger.client(data);
         if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
             rustls::Stream::new(&mut tlscon, self.stream())
@@ -616,12 +637,10 @@ impl Mailer {
         MORE AUTH METHODS
         UTF8
         MIME
+        ! buffering
         ! address validation
         ! dot stuffing
         ! transaction-failed
-    Done:
-        TLS
-        AUTH PLAIN
 */
 
 /*

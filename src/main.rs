@@ -1,5 +1,5 @@
 use serde_derive::Deserialize;
-use smtp::{Credentials, Mail, Mailer, Server};
+use smtp::{Credentials, Logger, Mail, Mailer, Server};
 use std::{env::args, fs, io, process::exit};
 
 #[derive(Deserialize)]
@@ -82,6 +82,14 @@ fn prompt_password(username: &String) -> String {
     buffer
 }
 
+#[derive(Clone)]
+struct NoLogger;
+
+impl Logger for NoLogger {
+    fn client(&mut self, data: &[u8]) {}
+    fn server(&mut self, data: &[u8]) {}
+}
+
 fn main() {
     let args: Vec<String> = args().collect();
     if args.len() < 2 {
@@ -104,7 +112,7 @@ fn main() {
         .clone()
         .unwrap_or_else(|| prompt_password(&username));
 
-    let mut mailer = Mailer::new(Server::from(&mail_file.server));
+    let mut mailer = Mailer::new(Server::from(&mail_file.server), NoLogger);
     mailer
         .connect(Credentials::new(username, password))
         .unwrap();
