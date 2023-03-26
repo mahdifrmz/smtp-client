@@ -1,5 +1,5 @@
 use serde_derive::Deserialize;
-use smtp::{Credentials, Logger, Mail, Mailer, Server};
+use smtp::{Credentials, Logger, Mail, Mailer, Server, SmtpErr};
 use std::{
     env::args,
     fs,
@@ -84,7 +84,7 @@ impl MailFile {
 fn prompt_password(username: &String) -> String {
     let mut buffer = String::new();
     println!("Enter password for {}:", username);
-    io::stdin().read_line(&mut buffer).unwrap();
+    let _ = io::stdin().read_line(&mut buffer);
     buffer
 }
 
@@ -168,7 +168,10 @@ fn main() {
     let mail_file = fs::read_to_string(mail_file.clone())
         .expect(format!("failed to open file: {}", mail_file).as_str());
 
-    let mail_file: MailFile = toml::from_str(mail_file.as_str()).unwrap();
+    let mail_file: MailFile = toml::from_str(mail_file.as_str()).unwrap_or_else(|e| {
+        eprintln!("mail file error: {}", e.message());
+        exit(1)
+    });
     let username = mail_file
         .user
         .username
@@ -193,12 +196,43 @@ fn main() {
     };
 
     let server = Server::from(&mail_file.server);
-    let mut mailer = Mailer::new(server, logger);
-    mailer
-        .connect(Credentials::new(username, password))
-        .unwrap();
-    for mail in mail_file.mails() {
-        mailer.send_mail(mail).unwrap();
+
+    if let Err(e) = (|| -> Result<(), SmtpErr> {
+        let mut mailer = Mailer::new(server, logger);
+        mailer.connect(Credentials::new(username, password))?;
+
+        for mail in mail_file.mails() {
+            mailer.send_mail(mail)?;
+        }
+        mailer.disconnect()?;
+
+        Ok(())
+    })() {
+        let mes = match e {
+            SmtpErr::Protocol | SmtpErr::MailBoxName => {
+                "There was an error on the mail server side.".to_string()
+            }
+            SmtpErr::ServerUnreachable => "Can't reach the server, try again later.".to_string(),
+            SmtpErr::ServerUnavailable => "Server abruptly ended the connection.".to_string(),
+            SmtpErr::InvalidServer => {
+                "The server address you entered probably is not an SMTP one.".to_string()
+            }
+            SmtpErr::Network => "Disconnected due to a network issues.".to_string(),
+            SmtpErr::InvalidCred => "The credentials you entered were invalidated by the server. \
+Make sure about the entered username and password."
+                .to_string(),
+            SmtpErr::Policy => "The Mail request was rejected by the server due to some policy. \
+Can't send the mail."
+                .to_string(),
+            SmtpErr::Forward(mes) => format!(
+                "The entered address was an old one. \
+Here's the message from the server: {}",
+                mes
+            )
+            .to_string(),
+        };
+
+        eprintln!("Error: {}", mes);
+        exit(1);
     }
-    mailer.disconnect().unwrap();
 }
