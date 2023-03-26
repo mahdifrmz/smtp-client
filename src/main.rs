@@ -10,10 +10,12 @@ fn main() {
         .unwrap();
     mailer
         .send_mail(Mail {
-            subject: "".to_string(),
+            subject: "warning".to_string(),
             from: username.clone(),
             to: username.clone(),
             text: "salam!".to_string(),
+            from_name: Some("mahdi".to_string()),
+            to_name: Some("mahdi".to_string()),
         })
         .unwrap();
     mailer.disconnect().unwrap();

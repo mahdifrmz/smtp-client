@@ -184,7 +184,9 @@ where
 pub struct Mail {
     pub subject: String,
     pub from: String,
+    pub from_name: Option<String>,
     pub to: String,
+    pub to_name: Option<String>,
     pub text: String,
 }
 
@@ -571,11 +573,29 @@ impl Mailer {
             _ => Err(SmtpErr::Protocol),
         }
     }
-    fn mail_data(&mut self, content: &String) -> SmtpResult<()> {
+    fn mail_data(&mut self, mail: &Mail) -> SmtpResult<()> {
         self.send(Command::Data)?;
         let line = self.recv_line()?;
         line.expect(StatusCode::StartMailInput)?;
-        self.write(content.as_bytes())?;
+        self.write(
+            format!(
+                "From: {}<{}>\r\n",
+                mail.from_name.as_ref().unwrap_or(&"".to_string()),
+                mail.from
+            )
+            .as_bytes(),
+        )?;
+        self.write(
+            format!(
+                "To: {}<{}>\r\n",
+                mail.to_name.as_ref().unwrap_or(&"".to_string()),
+                mail.to
+            )
+            .as_bytes(),
+        )?;
+        self.write(format!("Subject: {}\r\n", mail.subject).as_bytes())?;
+        self.write("\r\n".as_bytes())?;
+        self.write(mail.text.as_bytes())?;
         self.write("\r\n.\r\n".as_bytes())?;
         let line = self.recv_line()?;
         match line.code {
@@ -587,7 +607,7 @@ impl Mailer {
     pub fn send_mail(&mut self, mail: Mail) -> SmtpResult<()> {
         self.mail_from(&mail.from)?;
         self.mail_to(&mail.to)?;
-        self.mail_data(&mail.text)
+        self.mail_data(&mail)
     }
 }
 
@@ -599,7 +619,6 @@ impl Mailer {
         MIME
         ! address validation
         ! dot stuffing
-        ! forward-path
         ! transaction-failed
     Done:
         TLS
