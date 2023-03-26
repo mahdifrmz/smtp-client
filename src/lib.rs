@@ -175,10 +175,9 @@ where
     let mut parser = Parser::new(stream);
     let line = parser.recv_line()?;
     if !line.last {
-        Err(SmtpErr::Protocol)
-    } else {
-        Ok(line)
+        parser.recv_reply()?;
     }
+    Ok(line)
 }
 
 pub struct Mail {
@@ -231,9 +230,9 @@ pub struct Mailer {
 }
 
 impl Server {
-    pub fn new(address: &str, port: u16) -> Server {
+    pub fn new(address: String, port: u16) -> Server {
         Server {
-            address: address.to_owned(),
+            address: address,
             port,
             meta: ServerMeta::new(),
         }
