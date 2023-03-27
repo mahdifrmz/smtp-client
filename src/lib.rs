@@ -191,6 +191,10 @@ fn get_auth_plain(username: &str, password: &str) -> String {
     general_purpose::STANDARD.encode(s)
 }
 
+fn get_auth_login(token: &str) -> String {
+    general_purpose::STANDARD.encode(token)
+}
+
 fn stream_recv_reply<T>(stream: &mut T, logger: &mut impl Logger) -> SmtpResult<Vec<Line>>
 where
     T: Read,
@@ -279,6 +283,7 @@ enum Support {
 struct ServerMeta {
     utf8: Support,
     auth_plain: Support,
+    auth_login: Support,
     tls: Support,
     pipelining: Support,
 }
@@ -310,6 +315,7 @@ impl ServerMeta {
         ServerMeta {
             utf8: Support::Unknown,
             auth_plain: Support::Unknown,
+            auth_login: Support::Unknown,
             tls: Support::Unknown,
             pipelining: Support::Unknown,
         }
@@ -324,6 +330,7 @@ enum Command {
     RcptTo(String),
     Data,
     AuthPlain(String, String),
+    AuthLogin,
 }
 
 impl ToString for Command {
@@ -336,6 +343,7 @@ impl ToString for Command {
             Command::MailFrom(from) => format!("MAIL FROM:<{}>", from),
             Command::RcptTo(to) => format!("RCPT TO:<{}>", to),
             Command::AuthPlain(un, pw) => format!("AUTH PLAIN {}", get_auth_plain(un, pw)),
+            Command::AuthLogin => "AUTH LOGIN".to_string(),
         };
         cmd.push_str("\r\n");
         cmd
@@ -353,6 +361,7 @@ enum StatusCode {
     UserNotLocal = 251,
     CanNotVrfyButWillAttemp = 252,
     StartMailInput = 354,
+    ServerChallenge = 334,
     ServiceNotAvailable = 421,
     PasswordTransition = 432,
     MailboxUnavailable = 450,
@@ -386,12 +395,14 @@ enum EhloLine {
 
 enum AuthMech {
     Plain,
+    Login,
 }
 
 impl ToString for AuthMech {
     fn to_string(&self) -> String {
         (match self {
             AuthMech::Plain => "PLAIN",
+            AuthMech::Login => "LOGIN",
         })
         .to_string()
     }
@@ -419,6 +430,7 @@ fn status_code(code: u32) -> Option<StatusCode> {
         250 => Some(StatusCode::Okay),
         251 => Some(StatusCode::UserNotLocal),
         252 => Some(StatusCode::CanNotVrfyButWillAttemp),
+        334 => Some(StatusCode::ServerChallenge),
         354 => Some(StatusCode::StartMailInput),
         421 => Some(StatusCode::ServiceNotAvailable),
         432 => Some(StatusCode::PasswordTransition),
@@ -587,6 +599,8 @@ where
                         for i in 1..words.len() {
                             if words[i] == AuthMech::Plain.to_string() {
                                 self.server.meta.auth_plain = Support::Supported;
+                            } else if words[i] == AuthMech::Login.to_string() {
+                                self.server.meta.auth_login = Support::Supported;
                             }
                         }
                     }
@@ -603,17 +617,33 @@ where
         self.tlscon = Some(con);
         Ok(())
     }
-    fn auth_plain(&mut self, credentials: Credentials) -> SmtpResult<()> {
-        self.send(Command::AuthPlain(
-            credentials.username.clone(),
-            credentials.password.clone(),
-        ))?;
+    fn reply_auth_result(&mut self) -> SmtpResult<()> {
         let cc = self.recv_line()?.code;
         match cc {
             StatusCode::AuthSuccess => Ok(()),
             StatusCode::AuthInvalidCred | StatusCode::NoAccess => Err(SmtpErr::InvalidCred),
             _ => Err(SmtpErr::Protocol),
         }
+    }
+    fn auth_plain(&mut self, credentials: Credentials) -> SmtpResult<()> {
+        self.send(Command::AuthPlain(
+            credentials.username.clone(),
+            credentials.password.clone(),
+        ))?;
+        self.reply_auth_result()
+    }
+    fn end(&mut self) -> SmtpResult<()> {
+        self.write("\r\n".as_bytes())
+    }
+    fn auth_login(&mut self, credentials: Credentials) -> SmtpResult<()> {
+        self.send(Command::AuthLogin)?;
+        self.recv_line()?.expect(StatusCode::ServerChallenge)?;
+        self.write(get_auth_login(credentials.username.as_str()).as_bytes())?;
+        self.end()?;
+        self.recv_line()?.expect(StatusCode::ServerChallenge)?;
+        self.write(get_auth_login(credentials.password.as_str()).as_bytes())?;
+        self.end()?;
+        self.reply_auth_result()
     }
     pub fn connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
         self.init_connection()?;
@@ -624,6 +654,8 @@ where
         }
         if self.server.meta.auth_plain == Support::Supported {
             self.auth_plain(credentials)?;
+        } else if self.server.meta.auth_login == Support::Supported {
+            self.auth_login(credentials)?;
         }
         Ok(())
     }
