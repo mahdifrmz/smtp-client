@@ -242,6 +242,7 @@ pub struct Server {
     meta: ServerMeta,
 }
 
+#[derive(Clone)]
 pub struct Config {
     pub retries: u32,
     pub timeout: u64,
@@ -496,7 +497,8 @@ where
             stream_recv_reply(self.stream.as_mut().unwrap(), &mut self.logger)?
         };
         for l in lines.iter() {
-            if l.code == StatusCode::ServiceNotAvailable {
+            if l.code == StatusCode::ServiceNotAvailable || l.code == StatusCode::TransactionFailed
+            {
                 self.close();
                 return Err(SmtpErr::ServerUnavailable);
             }
@@ -513,7 +515,9 @@ where
         } else {
             stream_recv_line(self.stream.as_mut().unwrap(), &mut self.logger)?
         };
-        if line.code == StatusCode::ServiceNotAvailable {
+        if line.code == StatusCode::ServiceNotAvailable
+            || line.code == StatusCode::TransactionFailed
+        {
             self.close();
             Err(SmtpErr::ServerUnavailable)
         } else {
@@ -764,10 +768,7 @@ where
 /*
     todo:
         MIME-UTF8
-        ! buffering
         ! dot stuffing
-        ! transaction-failed
-        ! parallelism
 */
 
 /*
