@@ -586,7 +586,7 @@ where
         let cc = self.recv_line()?.code;
         match cc {
             StatusCode::AuthSuccess => Ok(()),
-            StatusCode::AuthInvalidCred => Err(SmtpErr::InvalidCred),
+            StatusCode::AuthInvalidCred | StatusCode::NoAccess => Err(SmtpErr::InvalidCred),
             _ => Err(SmtpErr::Protocol),
         }
     }
