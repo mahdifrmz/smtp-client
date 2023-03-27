@@ -2,7 +2,7 @@ mod input;
 
 use std::{
     io::{Read, Write},
-    net::TcpStream,
+    net::{SocketAddr, TcpStream, ToSocketAddrs},
     sync::Arc,
     time::Duration,
 };
@@ -58,6 +58,7 @@ pub enum SmtpErr {
     Network,
     InvalidCred,
     Policy,
+    DNS,
     MailBoxName(String),
     Forward(String),
 }
@@ -519,8 +520,19 @@ where
             .map_err(|_| SmtpErr::Network)?;
         Ok(())
     }
+
+    fn address_resolve(&mut self) -> SmtpResult<SocketAddr> {
+        format!("{}:{}", self.server.address, self.server.port)
+            .to_socket_addrs()
+            .map_err(|_| SmtpErr::DNS)?
+            .next()
+            .ok_or(SmtpErr::DNS)
+    }
+
     fn init_connection(&mut self) -> SmtpResult<()> {
-        let client = TcpStream::connect(format!("{}:{}", self.server.address, self.server.port))
+        let address = self.address_resolve()?;
+
+        let client = TcpStream::connect_timeout(&address, Duration::new(self.config.timeout, 0))
             .map_err(|_| SmtpErr::ServerUnreachable)?;
 
         self.stream = Some(client);
@@ -706,13 +718,10 @@ where
 
 /*
     todo:
-        MORE AUTH METHODS
-        UTF8
-        MIME
+        MIME-UTF8
         ! buffering
         ! dot stuffing
         ! transaction-failed
-        ! connect-timeout
 */
 
 /*

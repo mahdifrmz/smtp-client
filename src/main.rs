@@ -160,6 +160,7 @@ fn main() {
                 "The server address you entered probably is not an SMTP one.".to_string()
             }
             SmtpErr::Network => "Disconnected due to a network issues.".to_string(),
+            SmtpErr::DNS => "Failed to resolve hostname.".to_string(),
             SmtpErr::InvalidCred => "The credentials you entered were invalidated by the server. \
 Make sure about the entered username and password."
                 .to_string(),
