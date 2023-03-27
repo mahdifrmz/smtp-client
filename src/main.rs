@@ -1,16 +1,9 @@
 use smtp::{Config, Credentials, Logger, MailFile, Mailer, Server, SmtpErr};
-use std::{
-    env::args,
-    fs,
-    io::{self, Write},
-    process::exit,
-};
+use std::{env::args, fs, io::Write, process::exit};
 
 fn prompt_password(username: &String) -> String {
-    let mut buffer = String::new();
     println!("Enter password for {}:", username);
-    let _ = io::stdin().read_line(&mut buffer);
-    buffer
+    rpassword::read_password().unwrap()
 }
 
 struct FileLogger {
@@ -97,7 +90,39 @@ impl Drop for FileLogger {
     }
 }
 
+fn get_error_message(error: SmtpErr) -> String {
+    match error {
+        SmtpErr::Protocol => "There was an error on the mail server side.".to_string(),
+        SmtpErr::MailBoxName(mailbox) => format!("Invalid email address <{}>", mailbox),
+        SmtpErr::ServerUnreachable => "Can't reach the server, try again later.".to_string(),
+        SmtpErr::ServerUnavailable => "Server abruptly ended the connection.".to_string(),
+        SmtpErr::InvalidServer => {
+            "The server address you entered probably is not an SMTP one.".to_string()
+        }
+        SmtpErr::Network => "Disconnected due to a network issues.".to_string(),
+        SmtpErr::DNS => "Failed to resolve hostname.".to_string(),
+        SmtpErr::InvalidCred => "The credentials you entered were invalidated by the server. \
+Make sure about the entered username and password."
+            .to_string(),
+        SmtpErr::Policy => "The Mail request was rejected by the server due to some policy. \
+Can't send the mail."
+            .to_string(),
+        SmtpErr::Forward(mes) => format!(
+            "The entered address was an old one. \
+Here's the message from the server: {}",
+            mes
+        )
+        .to_string(),
+    }
+}
+
+fn crash(error: SmtpErr) -> ! {
+    eprintln!("Error: {}", get_error_message(error));
+    exit(1)
+}
+
 fn main() {
+    println!("Smtp Client v0.1.0");
     let args: Vec<String> = args().collect();
     if args.len() < 2 {
         exit(1);
@@ -140,42 +165,24 @@ fn main() {
         Config::new()
     };
 
-    if let Err(e) = (|| -> Result<(), SmtpErr> {
-        let mut mailer = Mailer::new(server, config, logger);
-        mailer.connect(Credentials::new(username, password))?;
-
-        for mail in mail_file.mails() {
-            mailer.send_mail(mail)?;
-        }
-        mailer.disconnect()?;
-
-        Ok(())
-    })() {
-        let mes = match e {
-            SmtpErr::Protocol => "There was an error on the mail server side.".to_string(),
-            SmtpErr::MailBoxName(mailbox) => format!("Invalid email address <{}>", mailbox),
-            SmtpErr::ServerUnreachable => "Can't reach the server, try again later.".to_string(),
-            SmtpErr::ServerUnavailable => "Server abruptly ended the connection.".to_string(),
-            SmtpErr::InvalidServer => {
-                "The server address you entered probably is not an SMTP one.".to_string()
-            }
-            SmtpErr::Network => "Disconnected due to a network issues.".to_string(),
-            SmtpErr::DNS => "Failed to resolve hostname.".to_string(),
-            SmtpErr::InvalidCred => "The credentials you entered were invalidated by the server. \
-Make sure about the entered username and password."
-                .to_string(),
-            SmtpErr::Policy => "The Mail request was rejected by the server due to some policy. \
-Can't send the mail."
-                .to_string(),
-            SmtpErr::Forward(mes) => format!(
-                "The entered address was an old one. \
-Here's the message from the server: {}",
-                mes
-            )
-            .to_string(),
-        };
-
-        eprintln!("Error: {}", mes);
-        exit(1);
+    let mut mailer = Mailer::new(server, config, logger);
+    if let Err(error) = mailer.connect(Credentials::new(username, password)) {
+        crash(error);
     }
+    println!("connected to server.");
+
+    for mail in mail_file.mails() {
+        match mailer.send_mail(&mail) {
+            Ok(_) => {
+                println!("--> sent [{}] to <{}>.", &mail.subject, &mail.to);
+            }
+            Err(_) => {
+                eprintln!("--> sending [{}] to <{}> failed.", &mail.subject, &mail.to);
+            }
+        }
+    }
+    if let Err(error) = mailer.disconnect() {
+        crash(error);
+    }
+    println!("connection closed.");
 }

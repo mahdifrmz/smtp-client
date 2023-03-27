@@ -691,7 +691,7 @@ where
         }
     }
 
-    pub fn send_mail(&mut self, mail: Mail) -> SmtpResult<()> {
+    pub fn send_mail(&mut self, mail: &Mail) -> SmtpResult<()> {
         check_address(mail.from.as_str())?;
         check_address(mail.to.as_str())?;
         if self.server.meta.pipelining == Support::Supported {
