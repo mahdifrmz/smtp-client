@@ -619,18 +619,21 @@ where
         self.close();
         Ok(())
     }
-    fn mail_from(&mut self, from: &String) -> SmtpResult<()> {
-        self.send(Command::MailFrom(from.clone()))?;
-        let line = self.recv_line()?;
-        match line.code {
+    fn command_mail_from(&mut self, from: &String) -> SmtpResult<()> {
+        self.send(Command::MailFrom(from.clone()))
+    }
+    fn reply_mail_from(&mut self, from: &String) -> SmtpResult<()> {
+        match self.recv_line()?.code {
             StatusCode::Okay => Ok(()),
             StatusCode::NoAccess => Err(SmtpErr::Policy),
             StatusCode::MailBoxNameNotAllowed => Err(SmtpErr::MailBoxName(from.to_string())),
             _ => Err(SmtpErr::Protocol),
         }
     }
-    fn mail_to(&mut self, to: &String) -> SmtpResult<()> {
-        self.send(Command::RcptTo(to.clone()))?;
+    fn command_mail_to(&mut self, to: &String) -> SmtpResult<()> {
+        self.send(Command::RcptTo(to.clone()))
+    }
+    fn reply_mail_to(&mut self, to: &String) -> SmtpResult<()> {
         let line = self.recv_line()?;
         match line.code {
             StatusCode::Okay | StatusCode::UserNotLocal => Ok(()),
@@ -640,10 +643,13 @@ where
             _ => Err(SmtpErr::Protocol),
         }
     }
-    fn mail_data(&mut self, mail: &Mail) -> SmtpResult<()> {
-        self.send(Command::Data)?;
-        let line = self.recv_line()?;
-        line.expect(StatusCode::StartMailInput)?;
+    fn command_mail_data(&mut self) -> SmtpResult<()> {
+        self.send(Command::Data)
+    }
+    fn reply_mail_data(&mut self) -> SmtpResult<()> {
+        self.recv_line()?.expect(StatusCode::StartMailInput)
+    }
+    pub fn command_mail_payload(&mut self, mail: &Mail) -> SmtpResult<()> {
         self.write(
             format!(
                 "From: {}<{}>\r\n",
@@ -663,26 +669,43 @@ where
         self.write(format!("Subject: {}\r\n", mail.subject).as_bytes())?;
         self.write("\r\n".as_bytes())?;
         self.write(mail.text.as_bytes())?;
-        self.write("\r\n.\r\n".as_bytes())?;
-        let line = self.recv_line()?;
-        match line.code {
+        self.write("\r\n.\r\n".as_bytes())
+    }
+    pub fn reply_mail_payload(&mut self, mail: &Mail) -> SmtpResult<()> {
+        match self.recv_line()?.code {
             StatusCode::Okay => Ok(()),
             StatusCode::NoAccess | StatusCode::MailboxUnavailable => Err(SmtpErr::Policy),
             _ => Err(SmtpErr::Protocol),
         }
     }
+
     pub fn send_mail(&mut self, mail: Mail) -> SmtpResult<()> {
         check_address(mail.from.as_str())?;
         check_address(mail.to.as_str())?;
-        self.mail_from(&mail.from)?;
-        self.mail_to(&mail.to)?;
-        self.mail_data(&mail)
+        if self.server.meta.pipelining == Support::Supported {
+            self.command_mail_from(&mail.from)?;
+            self.command_mail_to(&mail.to)?;
+            self.command_mail_data()?;
+            self.reply_mail_from(&mail.from)?;
+            self.reply_mail_to(&mail.to)?;
+            self.reply_mail_data()?;
+            self.command_mail_payload(&mail)?;
+            self.reply_mail_payload(&mail)
+        } else {
+            self.command_mail_from(&mail.from)?;
+            self.reply_mail_from(&mail.from)?;
+            self.command_mail_to(&mail.to)?;
+            self.reply_mail_to(&mail.to)?;
+            self.command_mail_data()?;
+            self.reply_mail_data()?;
+            self.command_mail_payload(&mail)?;
+            self.reply_mail_payload(&mail)
+        }
     }
 }
 
 /*
     todo:
-        PIPELINING
         MORE AUTH METHODS
         UTF8
         MIME
