@@ -1,85 +1,10 @@
-use serde_derive::Deserialize;
-use smtp::{Credentials, Logger, Mail, Mailer, Server, SmtpErr};
+use smtp::{Config, Credentials, Logger, MailFile, Mailer, Server, SmtpErr};
 use std::{
     env::args,
     fs,
     io::{self, Write},
     process::exit,
 };
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MailConfig {
-    retries: Option<u32>,
-    timeout: Option<u32>,
-    parallel: Option<bool>,
-    logfile: Option<String>,
-    #[serde(rename = "max-channels")]
-    max_channels: Option<u32>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MailEntry {
-    address: String,
-    name: Option<String>,
-    subject: String,
-    text: String,
-    attach: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MailUser {
-    address: String,
-    name: Option<String>,
-    username: Option<String>,
-    password: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MailServer {
-    address: String,
-    port: u16,
-}
-
-impl From<&MailServer> for Server {
-    fn from(mail_server: &MailServer) -> Self {
-        Server::new(mail_server.address.clone(), mail_server.port)
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MailFile {
-    user: MailUser,
-    server: MailServer,
-    config: Option<MailConfig>,
-    #[serde(rename = "mail")]
-    mails: Option<Vec<MailEntry>>,
-}
-
-impl MailFile {
-    fn mails(&self) -> Vec<Mail> {
-        let mut mails = vec![];
-
-        if let Some(file_mails) = self.mails.as_ref() {
-            for m in file_mails.iter() {
-                let mail = Mail {
-                    from: self.user.address.clone(),
-                    from_name: self.user.name.clone(),
-                    to: m.address.clone(),
-                    to_name: m.name.clone(),
-                    subject: m.subject.clone(),
-                    text: m.text.clone(),
-                };
-                mails.push(mail);
-            }
-        }
-        mails
-    }
-}
 
 fn prompt_password(username: &String) -> String {
     let mut buffer = String::new();
@@ -209,9 +134,14 @@ fn main() {
     };
 
     let server = Server::from(&mail_file.server);
+    let config = if let Some(cfg) = mail_file.config.as_ref() {
+        Config::from(cfg)
+    } else {
+        Config::new()
+    };
 
     if let Err(e) = (|| -> Result<(), SmtpErr> {
-        let mut mailer = Mailer::new(server, logger);
+        let mut mailer = Mailer::new(server, config, logger);
         mailer.connect(Credentials::new(username, password))?;
 
         for mail in mail_file.mails() {

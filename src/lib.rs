@@ -1,3 +1,5 @@
+mod input;
+
 use std::{
     io::{Read, Write},
     net::TcpStream,
@@ -5,7 +7,10 @@ use std::{
     time::Duration,
 };
 
+pub use input::MailFile;
+
 use base64::{engine::general_purpose, Engine};
+use input::MailConfig;
 use rustls::{OwnedTrustAnchor, RootCertStore};
 
 type TlsCon = rustls::ClientConnection;
@@ -219,6 +224,36 @@ pub struct Server {
     meta: ServerMeta,
 }
 
+pub struct Config {
+    retries: u32,
+    timeout: u64,
+    parallel: bool,
+    max_channels: u32,
+}
+
+impl From<&MailConfig> for Config {
+    fn from(value: &MailConfig) -> Self {
+        let def = Config::new();
+        Config {
+            retries: value.retries.unwrap_or(def.retries),
+            timeout: value.timeout.unwrap_or(def.timeout),
+            parallel: value.parallel.unwrap_or(def.parallel),
+            max_channels: value.max_channels.unwrap_or(def.max_channels),
+        }
+    }
+}
+
+impl Config {
+    pub fn new() -> Config {
+        Config {
+            retries: 0,
+            timeout: 5,
+            parallel: false,
+            max_channels: 8,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Support {
     Supported,
@@ -239,6 +274,7 @@ where
     L: Logger,
 {
     name: String,
+    config: Config,
     server: Server,
     tlscon: Option<TlsCon>,
     stream: Option<TcpStream>,
@@ -410,10 +446,11 @@ impl<L> Mailer<L>
 where
     L: Logger,
 {
-    pub fn new(server: Server, logger: L) -> Mailer<L> {
+    pub fn new(server: Server, config: Config, logger: L) -> Mailer<L> {
         Mailer {
             name: "me".to_string(),
             server,
+            config,
             tlscon: None,
             stream: None,
             logger,
@@ -487,7 +524,7 @@ where
             .map_err(|_| SmtpErr::ServerUnreachable)?;
 
         self.stream = Some(client);
-        self.set_time_out(5)?;
+        self.set_time_out(self.config.timeout)?;
 
         let rep = self.recv_line().map_err(|_| SmtpErr::InvalidServer)?;
         if rep.code != StatusCode::ServiceReady {
@@ -650,9 +687,9 @@ where
         UTF8
         MIME
         ! buffering
-        ! address validation
         ! dot stuffing
         ! transaction-failed
+        ! connect-timeout
 */
 
 /*
