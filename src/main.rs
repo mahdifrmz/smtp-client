@@ -1,4 +1,4 @@
-use smtp::{Config, Credentials, Logger, MailFile, Mailer, Server, SmtpErr};
+use smtp::{Config, Credentials, Logger, Mail, MailFile, Mailer, Server, SmtpErr};
 use std::{env::args, fs, io::Write, process::exit};
 
 fn prompt_password(username: &String) -> String {
@@ -116,9 +116,51 @@ Here's the message from the server: {}",
     }
 }
 
-fn crash(error: SmtpErr) -> ! {
-    eprintln!("Error: {}", get_error_message(error));
-    exit(1)
+fn try_send_mail(mailer: &mut Mailer<FileLogger>, mail: &Mail, retries: u32) {
+    let mut retries = retries;
+    loop {
+        match mailer.send_mail(&mail) {
+            Ok(_) => {
+                println!("--> sent [{}] to <{}>.", &mail.subject, &mail.to);
+                break;
+            }
+            Err(e) => {
+                eprintln!(
+                    "--> sending [{}] to <{}> failed:\n{}",
+                    &mail.subject,
+                    &mail.to,
+                    get_error_message(e.clone())
+                );
+                if e.retriable() && retries > 0 {
+                    eprintln!("--> retrying...");
+                    retries = retries - 1;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn try_connect(mailer: &mut Mailer<FileLogger>, credentials: Credentials, retries: u32) {
+    let mut retries = retries;
+    loop {
+        match mailer.connect(credentials.clone()) {
+            Ok(_) => {
+                println!("connected to server.");
+                break;
+            }
+            Err(e) => {
+                eprintln!("connecting failed:\n{}", get_error_message(e.clone()));
+                if e.retriable() && retries > 0 {
+                    eprintln!("retrying...");
+                    retries = retries - 1;
+                } else {
+                    exit(1);
+                }
+            }
+        }
+    }
 }
 
 fn main() {
@@ -164,25 +206,14 @@ fn main() {
     } else {
         Config::new()
     };
+    let retries = config.retries;
 
     let mut mailer = Mailer::new(server, config, logger);
-    if let Err(error) = mailer.connect(Credentials::new(username, password)) {
-        crash(error);
-    }
-    println!("connected to server.");
-
+    try_connect(&mut mailer, Credentials::new(username, password), retries);
     for mail in mail_file.mails() {
-        match mailer.send_mail(&mail) {
-            Ok(_) => {
-                println!("--> sent [{}] to <{}>.", &mail.subject, &mail.to);
-            }
-            Err(_) => {
-                eprintln!("--> sending [{}] to <{}> failed.", &mail.subject, &mail.to);
-            }
-        }
+        try_send_mail(&mut mailer, &mail, retries);
     }
-    if let Err(error) = mailer.disconnect() {
-        crash(error);
+    if let Ok(()) = mailer.disconnect() {
+        println!("connection closed.");
     }
-    println!("connection closed.");
 }

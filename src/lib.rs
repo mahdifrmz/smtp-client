@@ -49,7 +49,7 @@ where
     next_char: char,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SmtpErr {
     Protocol,
     ServerUnreachable,
@@ -61,6 +61,18 @@ pub enum SmtpErr {
     DNS,
     MailBoxName(String),
     Forward(String),
+}
+
+impl SmtpErr {
+    pub fn retriable(&self) -> bool {
+        match self {
+            SmtpErr::Network
+            | SmtpErr::DNS
+            | SmtpErr::ServerUnavailable
+            | SmtpErr::ServerUnreachable => true,
+            _ => false,
+        }
+    }
 }
 
 type SmtpResult<T> = Result<T, SmtpErr>;
@@ -207,6 +219,7 @@ pub struct Mail {
     pub text: String,
 }
 
+#[derive(Clone)]
 pub struct Credentials {
     username: String,
     password: String,
@@ -226,10 +239,10 @@ pub struct Server {
 }
 
 pub struct Config {
-    retries: u32,
-    timeout: u64,
-    parallel: bool,
-    max_channels: u32,
+    pub retries: u32,
+    pub timeout: u64,
+    pub parallel: bool,
+    pub max_channels: u32,
 }
 
 impl From<&MailConfig> for Config {
@@ -722,6 +735,7 @@ where
         ! buffering
         ! dot stuffing
         ! transaction-failed
+        ! parallelism
 */
 
 /*
