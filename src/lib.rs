@@ -671,7 +671,7 @@ where
         self.write(mail.text.as_bytes())?;
         self.write("\r\n.\r\n".as_bytes())
     }
-    pub fn reply_mail_payload(&mut self, mail: &Mail) -> SmtpResult<()> {
+    pub fn reply_mail_payload(&mut self) -> SmtpResult<()> {
         match self.recv_line()?.code {
             StatusCode::Okay => Ok(()),
             StatusCode::NoAccess | StatusCode::MailboxUnavailable => Err(SmtpErr::Policy),
@@ -690,7 +690,7 @@ where
             self.reply_mail_to(&mail.to)?;
             self.reply_mail_data()?;
             self.command_mail_payload(&mail)?;
-            self.reply_mail_payload(&mail)
+            self.reply_mail_payload()
         } else {
             self.command_mail_from(&mail.from)?;
             self.reply_mail_from(&mail.from)?;
@@ -699,7 +699,7 @@ where
             self.command_mail_data()?;
             self.reply_mail_data()?;
             self.command_mail_payload(&mail)?;
-            self.reply_mail_payload(&mail)
+            self.reply_mail_payload()
         }
     }
 }
