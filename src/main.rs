@@ -225,9 +225,7 @@ fn main() {
             exit(1);
         }
         for mail in mail_file.mails() {
-            if !try_send_mail(&mut mailer, &mail, retries) {
-                success = false;
-            }
+            success = success && try_send_mail(&mut mailer, &mail, retries);
         }
         try_disconnect(&mut mailer);
         if !success {
@@ -258,9 +256,7 @@ fn main() {
         }
         let mut success = true;
         for _ in 0..mail_count {
-            if !rx.recv().unwrap() {
-                success = false;
-            }
+            success = success && rx.recv().unwrap();
         }
         if !success {
             exit(1);
