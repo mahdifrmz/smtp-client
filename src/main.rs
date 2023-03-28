@@ -32,63 +32,6 @@ Here's the message from the server: {}",
     }
 }
 
-fn try_send_mail(mailer: &mut Mailer<logger::FileLogger>, mail: &Mail, retries: u32) -> bool {
-    let mut retries = retries;
-    loop {
-        match mailer.send_mail(&mail) {
-            Ok(_) => {
-                println!("--> sent [{}] to <{}>.", &mail.subject, &mail.to);
-                return true;
-            }
-            Err(e) => {
-                eprintln!(
-                    "--> sending [{}] to <{}> failed:\n{}",
-                    &mail.subject,
-                    &mail.to,
-                    get_error_message(e.clone())
-                );
-                if e.retriable() && retries > 0 {
-                    eprintln!("--> retrying...");
-                    retries = retries - 1;
-                } else {
-                    return false;
-                }
-            }
-        }
-    }
-}
-
-fn try_connect(
-    mailer: &mut Mailer<logger::FileLogger>,
-    credentials: Credentials,
-    retries: u32,
-) -> bool {
-    let mut retries = retries;
-    loop {
-        match mailer.connect(credentials.clone()) {
-            Ok(_) => {
-                println!("connected to server.");
-                return true;
-            }
-            Err(e) => {
-                eprintln!("connecting failed:\n{}", get_error_message(e.clone()));
-                if e.retriable() && retries > 0 {
-                    eprintln!("retrying...");
-                    retries = retries - 1;
-                } else {
-                    return false;
-                }
-            }
-        }
-    }
-}
-
-fn try_disconnect(mailer: &mut Mailer<logger::FileLogger>) {
-    if let Ok(()) = mailer.disconnect() {
-        println!("connection closed.");
-    }
-}
-
 fn main() {
     println!("Smtp Client v0.1.0");
     let args: Vec<String> = args().collect();
@@ -106,20 +49,31 @@ fn main() {
 
     let (server, mails, config, logfile, credentials) = mail_file.destruct();
 
-    let retries = config.retries;
     let parallel = config.parallel;
     let thread_count = config.max_channels;
 
     if !parallel {
         let mut mailer = Mailer::new(server, config, logger::FileLogger::new(logfile));
         let mut success = true;
-        if !try_connect(&mut mailer, credentials, retries) {
+        if let Err(e) = mailer.connect(credentials) {
+            eprintln!("connecting failed:\n{}", get_error_message(e.clone()));
             exit(1);
         }
+        println!("connected to server.");
         for mail in mails {
-            success = success && try_send_mail(&mut mailer, &mail, retries);
+            if let Err(e) = mailer.send_mail(&mail) {
+                success = false;
+                eprintln!(
+                    "--> sending [{}] to <{}> failed:\n{}",
+                    &mail.subject,
+                    &mail.to,
+                    get_error_message(e.clone())
+                );
+            } else {
+                println!("--> sent [{}] to <{}>.", &mail.subject, &mail.to);
+            }
         }
-        try_disconnect(&mut mailer);
+        let _ = mailer.disconnect();
         if !success {
             exit(1);
         }
@@ -136,12 +90,12 @@ fn main() {
             let tx = tx.clone();
             threadpool.execute(move || {
                 let mut mailer = Mailer::new(server, config, logger);
-                if !try_connect(&mut mailer, credentials, retries) {
+                if mailer.connect(credentials).is_err() {
                     let _ = tx.send(false);
                     return;
                 }
-                let success = try_send_mail(&mut mailer, &mail, retries);
-                try_disconnect(&mut mailer);
+                let success = mailer.send_mail(&mail).is_ok();
+                let _ = mailer.disconnect();
                 let _ = tx.send(success);
             });
         }

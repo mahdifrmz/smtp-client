@@ -650,7 +650,7 @@ where
         self.end()?;
         self.reply_auth_result()
     }
-    pub fn connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
+    fn try_connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
         self.init_connection()?;
         self.handshake()?;
         if self.server.meta.tls == Support::Supported {
@@ -672,7 +672,7 @@ where
         self.tlscon.take();
         self.server.meta = ServerMeta::new();
     }
-    pub fn disconnect(&mut self) -> SmtpResult<()> {
+    fn try_disconnect(&mut self) -> SmtpResult<()> {
         if self.stream.is_some() {
             self.send(Command::Quit)?;
         }
@@ -711,7 +711,7 @@ where
     fn reply_mail_data(&mut self) -> SmtpResult<()> {
         self.recv_line()?.expect(StatusCode::StartMailInput)
     }
-    pub fn command_mail_payload(&mut self, mail: &Mail) -> SmtpResult<()> {
+    fn command_mail_payload(&mut self, mail: &Mail) -> SmtpResult<()> {
         self.write(
             format!(
                 "From: {}<{}>\r\n",
@@ -733,7 +733,7 @@ where
         self.write(mail.text.as_bytes())?;
         self.write("\r\n.\r\n".as_bytes())
     }
-    pub fn reply_mail_payload(&mut self) -> SmtpResult<()> {
+    fn reply_mail_payload(&mut self) -> SmtpResult<()> {
         match self.recv_line()?.code {
             StatusCode::Okay => Ok(()),
             StatusCode::NoAccess | StatusCode::MailboxUnavailable => Err(SmtpErr::Policy),
@@ -741,7 +741,7 @@ where
         }
     }
 
-    pub fn send_mail(&mut self, mail: &Mail) -> SmtpResult<()> {
+    fn try_send_mail(&mut self, mail: &Mail) -> SmtpResult<()> {
         check_address(mail.from.as_str())?;
         check_address(mail.to.as_str())?;
         if self.server.meta.pipelining == Support::Supported {
@@ -764,8 +764,61 @@ where
             self.reply_mail_payload()
         }
     }
-}
 
+    pub fn connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
+        let mut retries = self.config.retries;
+        loop {
+            match self.try_connect(credentials.clone()) {
+                Ok(_) => {
+                    return Ok(());
+                }
+                Err(e) => {
+                    if e.retriable() && retries > 0 {
+                        retries = retries - 1;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn disconnect(&mut self) -> SmtpResult<()> {
+        let mut retries = self.config.retries;
+        loop {
+            match self.try_disconnect() {
+                Ok(_) => {
+                    return Ok(());
+                }
+                Err(e) => {
+                    if e.retriable() && retries > 0 {
+                        retries = retries - 1;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn send_mail(&mut self, mail: &Mail) -> SmtpResult<()> {
+        let mut retries = self.config.retries;
+        loop {
+            match self.try_send_mail(&mail) {
+                Ok(_) => {
+                    return Ok(());
+                }
+                Err(e) => {
+                    if e.retriable() && retries > 0 {
+                        retries = retries - 1;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+}
 /*
     todo:
         MIME-UTF8
