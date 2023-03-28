@@ -3,7 +3,16 @@ mod logger;
 
 use input::MailFile;
 use smtp::{Config, Credentials, Mail, Mailer, Server, SmtpErr};
-use std::{env::args, fs, process::exit, sync::mpsc::channel};
+use std::{
+    cmp::min,
+    env::args,
+    fs,
+    process::exit,
+    sync::{Arc, Mutex},
+    thread,
+};
+
+use crate::logger::FileLogger;
 
 fn get_error_message(error: SmtpErr) -> String {
     match error {
@@ -32,6 +41,33 @@ Here's the message from the server: {}",
     }
 }
 
+mod message {
+
+    use crate::get_error_message;
+    use smtp::{Mail, SmtpErr};
+
+    pub fn connected() {
+        println!("connected to server.");
+    }
+    pub fn disconnect() {
+        println!("connection closed.");
+    }
+    pub fn connection_failed(error: SmtpErr) {
+        eprintln!("connecting failed:\n{}", get_error_message(error.clone()));
+    }
+    pub fn mail_sent(mail: &Mail) {
+        println!("--> sent [{}] to <{}>.", &mail.subject, &mail.to);
+    }
+    pub fn mail_failed(mail: &Mail, error: &SmtpErr) {
+        eprintln!(
+            "--> sending [{}] to <{}> failed:\n{}",
+            &mail.subject,
+            &mail.to,
+            get_error_message(error.clone())
+        );
+    }
+}
+
 fn main() {
     println!("Smtp Client v0.1.0");
     let args: Vec<String> = args().collect();
@@ -50,59 +86,76 @@ fn main() {
     let (server, mails, config, logfile, credentials) = mail_file.destruct();
 
     let parallel = config.parallel;
-    let thread_count = config.max_channels;
+    let thread_count = min(config.max_channels, mails.len() as u32);
 
     if !parallel {
         let mut mailer = Mailer::new(server, config, logger::FileLogger::new(logfile));
         let mut success = true;
         if let Err(e) = mailer.connect(credentials) {
-            eprintln!("connecting failed:\n{}", get_error_message(e.clone()));
+            message::connection_failed(e);
             exit(1);
+        } else {
+            message::connected();
         }
-        println!("connected to server.");
         for mail in mails {
             if let Err(e) = mailer.send_mail(&mail) {
                 success = false;
-                eprintln!(
-                    "--> sending [{}] to <{}> failed:\n{}",
-                    &mail.subject,
-                    &mail.to,
-                    get_error_message(e.clone())
-                );
+                message::mail_failed(&mail, &e);
             } else {
-                println!("--> sent [{}] to <{}>.", &mail.subject, &mail.to);
+                message::mail_sent(&mail);
             }
         }
-        let _ = mailer.disconnect();
+        if mailer.disconnect().is_ok() {
+            message::disconnect();
+        }
         if !success {
             exit(1);
         }
     } else {
-        let threadpool = threadpool::ThreadPool::new(thread_count as usize);
-        let (tx, rx) = channel();
-        let mut mail_count = 0;
-        for mail in mails {
-            mail_count = mail_count + 1;
-            let logger = logger::FileLogger::new(logfile.clone());
-            let credentials = credentials.clone();
-            let config = config.clone();
-            let server = server.clone();
-            let tx = tx.clone();
-            threadpool.execute(move || {
-                let mut mailer = Mailer::new(server, config, logger);
-                if mailer.connect(credentials).is_err() {
-                    let _ = tx.send(false);
-                    return;
-                }
-                let success = mailer.send_mail(&mail).is_ok();
-                let _ = mailer.disconnect();
-                let _ = tx.send(success);
-            });
-        }
-        let mut success = true;
-        for _ in 0..mail_count {
-            success = success && rx.recv().unwrap();
-        }
+        let mails = Arc::new(Mutex::new(mails));
+        let mut handles = (0..thread_count)
+            .map(|_| {
+                let server = server.clone();
+                let config = config.clone();
+                let credentials = credentials.clone();
+                let mails = mails.clone();
+                let handle = thread::spawn(move || {
+                    let mut mailer = Mailer::new(server, config, FileLogger::none());
+                    if let Err(e) = mailer.connect(credentials) {
+                        message::connection_failed(e);
+                        false
+                    } else {
+                        message::connected();
+                        let mut success = true;
+                        loop {
+                            let m = mails.lock().unwrap().pop();
+                            match m {
+                                Some(mail) => {
+                                    match mailer.send_mail(&mail) {
+                                        Ok(_) => message::mail_sent(&mail),
+                                        Err(e) => {
+                                            success = false;
+                                            message::mail_failed(&mail, &e)
+                                        }
+                                    };
+                                }
+                                None => break,
+                            }
+                        }
+                        if mailer.disconnect().is_ok() {
+                            message::disconnect();
+                        }
+                        success
+                    }
+                });
+                handle
+            })
+            .collect::<Vec<_>>();
+
+        let success = handles
+            .drain(..)
+            .map(|h| h.join().unwrap())
+            .fold(true, |a, b| a && b);
         if !success {
             exit(1);
         }
