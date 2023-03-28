@@ -1,97 +1,13 @@
-use smtp::{Config, Credentials, Logger, Mail, MailFile, Mailer, Server, SmtpErr};
-use std::{env::args, fs, io::Write, process::exit, sync::mpsc::channel};
+mod input;
+mod logger;
 
-fn prompt_password(username: &String) -> String {
-    println!("Enter password for {}:", username);
-    rpassword::read_password().unwrap()
-}
-
-struct FileLogger {
-    enabled: bool,
-    file: Option<fs::File>,
-    is_client: bool,
-    is_server: bool,
-}
-
-impl FileLogger {
-    fn new(path: &String) -> FileLogger {
-        let file = fs::OpenOptions::new()
-            .truncate(true)
-            .write(true)
-            .create(true)
-            .open(path)
-            .expect(format!("failed to open file: {}", path).as_str());
-        FileLogger {
-            enabled: true,
-            file: Some(file),
-            is_client: false,
-            is_server: false,
-        }
-    }
-    fn none() -> FileLogger {
-        FileLogger {
-            enabled: false,
-            file: None,
-            is_client: false,
-            is_server: false,
-        }
-    }
-}
-
-impl Logger for FileLogger {
-    fn client(&mut self, data: &[u8]) {
-        let file = if let Some(f) = self.file.as_mut() {
-            f
-        } else {
-            return;
-        };
-
-        if self.enabled {
-            if !self.is_client {
-                self.is_client = true;
-                self.is_server = false;
-                let _ = file.write("C: ".as_bytes());
-            }
-            let _ = file.write(data);
-        }
-    }
-
-    fn server(&mut self, data: &[u8]) {
-        let file = if let Some(f) = self.file.as_mut() {
-            f
-        } else {
-            return;
-        };
-
-        if self.enabled {
-            if !self.is_server {
-                self.is_server = true;
-                self.is_client = false;
-                let _ = file.write("S: ".as_bytes());
-            }
-            let _ = file.write(data);
-        }
-    }
-
-    fn disable(&mut self) {
-        self.enabled = false;
-    }
-
-    fn enable(&mut self) {
-        self.enabled = true;
-    }
-}
-
-impl Drop for FileLogger {
-    fn drop(&mut self) {
-        if let Some(file) = self.file.as_mut() {
-            let _ = file.flush();
-        }
-    }
-}
+use input::MailFile;
+use smtp::{Config, Credentials, Mail, Mailer, Server, SmtpErr};
+use std::{env::args, fs, process::exit, sync::mpsc::channel};
 
 fn get_error_message(error: SmtpErr) -> String {
     match error {
+        SmtpErr::File(path) => format!("Failed to open file: {}", path),
         SmtpErr::Protocol => "There was an error on the mail server side.".to_string(),
         SmtpErr::MailBoxName(mailbox) => format!("Invalid email address <{}>", mailbox),
         SmtpErr::ServerUnreachable => "Can't reach the server, try again later.".to_string(),
@@ -116,7 +32,7 @@ Here's the message from the server: {}",
     }
 }
 
-fn try_send_mail(mailer: &mut Mailer<FileLogger>, mail: &Mail, retries: u32) -> bool {
+fn try_send_mail(mailer: &mut Mailer<logger::FileLogger>, mail: &Mail, retries: u32) -> bool {
     let mut retries = retries;
     loop {
         match mailer.send_mail(&mail) {
@@ -142,7 +58,11 @@ fn try_send_mail(mailer: &mut Mailer<FileLogger>, mail: &Mail, retries: u32) -> 
     }
 }
 
-fn try_connect(mailer: &mut Mailer<FileLogger>, credentials: Credentials, retries: u32) -> bool {
+fn try_connect(
+    mailer: &mut Mailer<logger::FileLogger>,
+    credentials: Credentials,
+    retries: u32,
+) -> bool {
     let mut retries = retries;
     loop {
         match mailer.connect(credentials.clone()) {
@@ -163,22 +83,9 @@ fn try_connect(mailer: &mut Mailer<FileLogger>, credentials: Credentials, retrie
     }
 }
 
-fn try_disconnect(mailer: &mut Mailer<FileLogger>) {
+fn try_disconnect(mailer: &mut Mailer<logger::FileLogger>) {
     if let Ok(()) = mailer.disconnect() {
         println!("connection closed.");
-    }
-}
-
-fn create_logger(mail_file: &MailFile) -> FileLogger {
-    if let Some(logfile) = mail_file
-        .config
-        .as_ref()
-        .map(|c| c.logfile.clone())
-        .flatten()
-    {
-        FileLogger::new(&logfile)
-    } else {
-        FileLogger::none()
     }
 }
 
@@ -196,35 +103,20 @@ fn main() {
         eprintln!("mail file error: {}", e.message());
         exit(1)
     });
-    let username = mail_file
-        .user
-        .username
-        .clone()
-        .unwrap_or(mail_file.user.address.clone());
 
-    let password = mail_file
-        .user
-        .password
-        .clone()
-        .unwrap_or_else(|| prompt_password(&username));
+    let (server, mails, config, logfile, credentials) = mail_file.destruct();
 
-    let server = Server::from(&mail_file.server);
-    let config = if let Some(cfg) = mail_file.config.as_ref() {
-        Config::from(cfg)
-    } else {
-        Config::new()
-    };
     let retries = config.retries;
     let parallel = config.parallel;
     let thread_count = config.max_channels;
 
     if !parallel {
-        let mut mailer = Mailer::new(server, config, create_logger(&mail_file));
+        let mut mailer = Mailer::new(server, config, logger::FileLogger::new(logfile));
         let mut success = true;
-        if !try_connect(&mut mailer, Credentials::new(username, password), retries) {
+        if !try_connect(&mut mailer, credentials, retries) {
             exit(1);
         }
-        for mail in mail_file.mails() {
+        for mail in mails {
             success = success && try_send_mail(&mut mailer, &mail, retries);
         }
         try_disconnect(&mut mailer);
@@ -235,17 +127,16 @@ fn main() {
         let threadpool = threadpool::ThreadPool::new(thread_count as usize);
         let (tx, rx) = channel();
         let mut mail_count = 0;
-        for mail in mail_file.mails() {
+        for mail in mails {
             mail_count = mail_count + 1;
-            let logger = create_logger(&mail_file);
+            let logger = logger::FileLogger::new(logfile.clone());
+            let credentials = credentials.clone();
             let config = config.clone();
             let server = server.clone();
-            let username = username.clone();
-            let password = password.clone();
             let tx = tx.clone();
             threadpool.execute(move || {
                 let mut mailer = Mailer::new(server, config, logger);
-                if !try_connect(&mut mailer, Credentials::new(username, password), retries) {
+                if !try_connect(&mut mailer, credentials, retries) {
                     let _ = tx.send(false);
                     return;
                 }

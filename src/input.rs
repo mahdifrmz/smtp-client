@@ -1,6 +1,6 @@
 use serde_derive::Deserialize;
 
-use crate::{Mail, Server};
+use crate::{Config, Credentials, Mail, Server};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,23 +55,86 @@ pub struct MailFile {
     pub mails: Option<Vec<MailEntry>>,
 }
 
+fn prompt_password(username: &String) -> String {
+    println!("Enter password for {}:", username);
+    rpassword::read_password().unwrap()
+}
+
+impl MailConfig {
+    pub fn destruct(self) -> (Config, Option<String>) {
+        let mut config = Config::new();
+        let mut logfile = None;
+
+        if let Some(value) = self.timeout {
+            config.timeout(value);
+        }
+        if let Some(value) = self.retries {
+            config.retires(value);
+        }
+        if let Some(value) = self.parallel {
+            config.parallel(value);
+        }
+        if let Some(value) = self.max_channels {
+            config.max_channels(value);
+        }
+        if let Some(value) = self.logfile {
+            logfile = Some(value);
+        }
+
+        (config, logfile)
+    }
+}
+
+impl MailServer {
+    pub fn destruct(self) -> Server {
+        Server::new(self.address, self.port)
+    }
+}
+
 impl MailFile {
-    pub fn mails(&self) -> Vec<Mail> {
+    pub fn destruct(mut self) -> (Server, Vec<Mail>, Config, Option<String>, Credentials) {
         let mut mails = vec![];
 
-        if let Some(file_mails) = self.mails.as_ref() {
-            for m in file_mails.iter() {
+        let (config, logfile) = if let Some(cfg) = self.config.take() {
+            cfg.destruct()
+        } else {
+            (Config::new(), None)
+        };
+
+        let username = self
+            .user
+            .username
+            .clone()
+            .unwrap_or(self.user.address.clone());
+
+        let password = self
+            .user
+            .password
+            .clone()
+            .unwrap_or_else(|| prompt_password(&username));
+
+        let server = self.server.destruct();
+
+        if let Some(mut file_mails) = self.mails.take() {
+            for m in file_mails.drain(..) {
                 let mail = Mail {
                     from: self.user.address.clone(),
                     from_name: self.user.name.clone(),
-                    to: m.address.clone(),
-                    to_name: m.name.clone(),
-                    subject: m.subject.clone(),
-                    text: m.text.clone(),
+                    to: m.address,
+                    to_name: m.name,
+                    subject: m.subject,
+                    text: m.text,
+                    attachments: m.attach.unwrap_or(vec![]),
                 };
                 mails.push(mail);
             }
         }
-        mails
+        (
+            server,
+            mails,
+            config,
+            logfile,
+            Credentials::new(username, password),
+        )
     }
 }

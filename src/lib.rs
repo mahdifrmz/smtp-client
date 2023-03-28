@@ -1,5 +1,3 @@
-mod input;
-
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
@@ -7,10 +5,7 @@ use std::{
     time::Duration,
 };
 
-pub use input::MailFile;
-
 use base64::{engine::general_purpose, Engine};
-use input::MailConfig;
 use rustls::{OwnedTrustAnchor, RootCertStore};
 
 type TlsCon = rustls::ClientConnection;
@@ -61,6 +56,7 @@ pub enum SmtpErr {
     DNS,
     MailBoxName(String),
     Forward(String),
+    File(String),
 }
 
 impl SmtpErr {
@@ -221,6 +217,7 @@ pub struct Mail {
     pub to: String,
     pub to_name: Option<String>,
     pub text: String,
+    pub attachments: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -250,18 +247,6 @@ pub struct Config {
     pub max_channels: u32,
 }
 
-impl From<&MailConfig> for Config {
-    fn from(value: &MailConfig) -> Self {
-        let def = Config::new();
-        Config {
-            retries: value.retries.unwrap_or(def.retries),
-            timeout: value.timeout.unwrap_or(def.timeout),
-            parallel: value.parallel.unwrap_or(def.parallel),
-            max_channels: value.max_channels.unwrap_or(def.max_channels),
-        }
-    }
-}
-
 impl Config {
     pub fn new() -> Config {
         Config {
@@ -270,6 +255,22 @@ impl Config {
             parallel: false,
             max_channels: 8,
         }
+    }
+    pub fn retires<'a>(&'a mut self, value: u32) -> &'a mut Config {
+        self.retries = value;
+        self
+    }
+    pub fn timeout<'a>(&'a mut self, value: u64) -> &'a mut Config {
+        self.timeout = value;
+        self
+    }
+    pub fn parallel<'a>(&'a mut self, value: bool) -> &'a mut Config {
+        self.parallel = value;
+        self
+    }
+    pub fn max_channels<'a>(&'a mut self, value: u32) -> &'a mut Config {
+        self.max_channels = value;
+        self
     }
 }
 
@@ -769,16 +770,4 @@ where
     todo:
         MIME-UTF8
         ! dot stuffing
-*/
-
-/*
-   - read .toml email file
-   - for each server
-        - create thread
-        - open connection
-        - read extensions (switch to TLS if supported)
-        - for every email
-            - MAIL commands
-        - QUIT
-    - join All threads
 */
