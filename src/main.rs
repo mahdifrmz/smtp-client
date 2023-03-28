@@ -91,21 +91,23 @@ fn main() {
     if !parallel {
         let mut mailer = Mailer::new(server, config, logger::FileLogger::new(logfile));
         let mut success = true;
-        if let Err(e) = mailer.connect(credentials) {
-            message::connection_failed(e);
-            exit(1);
-        } else {
-            message::connected();
-        }
+        let mut con = match mailer.connect(credentials) {
+            Ok(con) => con,
+            Err(e) => {
+                message::connection_failed(e);
+                exit(1);
+            }
+        };
+        message::connected();
         for mail in mails {
-            if let Err(e) = mailer.send_mail(&mail) {
+            if let Err(e) = con.send_mail(&mail) {
                 success = false;
                 message::mail_failed(&mail, &e);
             } else {
                 message::mail_sent(&mail);
             }
         }
-        if mailer.disconnect().is_ok() {
+        if con.close().is_ok() {
             message::disconnect();
         }
         if !success {
@@ -121,32 +123,34 @@ fn main() {
                 let mails = mails.clone();
                 let handle = thread::spawn(move || {
                     let mut mailer = Mailer::new(server, config, FileLogger::none());
-                    if let Err(e) = mailer.connect(credentials) {
-                        message::connection_failed(e);
-                        false
-                    } else {
-                        message::connected();
-                        let mut success = true;
-                        loop {
-                            let m = mails.lock().unwrap().pop();
-                            match m {
-                                Some(mail) => {
-                                    match mailer.send_mail(&mail) {
-                                        Ok(_) => message::mail_sent(&mail),
-                                        Err(e) => {
-                                            success = false;
-                                            message::mail_failed(&mail, &e)
-                                        }
-                                    };
-                                }
-                                None => break,
+                    let mut con = match mailer.connect(credentials) {
+                        Ok(con) => con,
+                        Err(e) => {
+                            message::connection_failed(e);
+                            return false;
+                        }
+                    };
+                    message::connected();
+                    let mut success = true;
+                    loop {
+                        let m = mails.lock().unwrap().pop();
+                        match m {
+                            Some(mail) => {
+                                match con.send_mail(&mail) {
+                                    Ok(_) => message::mail_sent(&mail),
+                                    Err(e) => {
+                                        success = false;
+                                        message::mail_failed(&mail, &e)
+                                    }
+                                };
                             }
+                            None => break,
                         }
-                        if mailer.disconnect().is_ok() {
-                            message::disconnect();
-                        }
-                        success
                     }
+                    if con.close().is_ok() {
+                        message::disconnect();
+                    }
+                    success
                 });
                 handle
             })

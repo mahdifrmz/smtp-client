@@ -27,7 +27,7 @@ fn create_tls_conn(server_address: &str) -> TlsCon {
     return TlsCon::new(Arc::new(config), server_address.try_into().unwrap()).unwrap();
 }
 
-pub trait Logger {
+pub trait Logger: Clone {
     fn client(&mut self, data: &[u8]);
     fn server(&mut self, data: &[u8]);
     fn disable(&mut self);
@@ -290,7 +290,7 @@ struct ServerMeta {
     pipelining: Support,
 }
 
-pub struct Mailer<L>
+pub struct MailerConnection<L>
 where
     L: Logger,
 {
@@ -298,7 +298,7 @@ where
     config: Config,
     server: Server,
     tlscon: Option<TlsCon>,
-    stream: Option<TcpStream>,
+    stream: TcpStream,
     logger: L,
 }
 
@@ -470,37 +470,34 @@ pub fn check_address(address: &str) -> SmtpResult<()> {
     .ok_or(SmtpErr::MailBoxName(address.to_string()))
 }
 
-impl<L> Mailer<L>
+impl<L> MailerConnection<L>
 where
     L: Logger,
 {
-    pub fn new(server: Server, config: Config, logger: L) -> Mailer<L> {
-        Mailer {
+    fn new(server: Server, config: Config, stream: TcpStream, logger: L) -> MailerConnection<L> {
+        MailerConnection {
             name: "me".to_string(),
             server,
             config,
             tlscon: None,
-            stream: None,
+            stream,
             logger,
         }
-    }
-    fn stream(&mut self) -> &mut TcpStream {
-        self.stream.as_mut().unwrap()
     }
     fn recv_reply(&mut self) -> SmtpResult<Vec<Line>> {
         let lines = if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
-            let mut tls = rustls::Stream::new(&mut tlscon, self.stream.as_mut().unwrap());
+            let mut tls = rustls::Stream::new(&mut tlscon, &mut self.stream);
             let lines = stream_recv_reply(&mut tls, &mut self.logger)?;
             self.tlscon = Some(tlscon);
             lines
         } else {
-            stream_recv_reply(self.stream.as_mut().unwrap(), &mut self.logger)?
+            stream_recv_reply(&mut self.stream, &mut self.logger)?
         };
         for l in lines.iter() {
             if l.code == StatusCode::ServiceNotAvailable || l.code == StatusCode::TransactionFailed
             {
-                self.close();
+                self.terminate();
                 return Err(SmtpErr::ServerUnavailable);
             }
         }
@@ -509,17 +506,17 @@ where
     fn recv_line(&mut self) -> SmtpResult<Line> {
         let line = if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
-            let mut tls = rustls::Stream::new(&mut tlscon, self.stream.as_mut().unwrap());
+            let mut tls = rustls::Stream::new(&mut tlscon, &mut self.stream);
             let line = stream_recv_line(&mut tls, &mut self.logger)?;
             self.tlscon = Some(tlscon);
             line
         } else {
-            stream_recv_line(self.stream.as_mut().unwrap(), &mut self.logger)?
+            stream_recv_line(&mut self.stream, &mut self.logger)?
         };
         if line.code == StatusCode::ServiceNotAvailable
             || line.code == StatusCode::TransactionFailed
         {
-            self.close();
+            self.terminate();
             Err(SmtpErr::ServerUnavailable)
         } else {
             Ok(line)
@@ -529,12 +526,12 @@ where
         self.logger.client(data);
         if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
-            rustls::Stream::new(&mut tlscon, self.stream())
+            rustls::Stream::new(&mut tlscon, &mut self.stream)
                 .write(data)
                 .map_err(|_| SmtpErr::Network)?;
             self.tlscon = Some(tlscon);
         } else {
-            self.stream().write(data).map_err(|_| SmtpErr::Network)?;
+            self.stream.write(data).map_err(|_| SmtpErr::Network)?;
         }
         Ok(())
     }
@@ -542,10 +539,10 @@ where
         self.write(cmd.to_string().as_bytes())
     }
     fn set_time_out(&mut self, seconds: u64) -> SmtpResult<()> {
-        self.stream()
+        self.stream
             .set_read_timeout(Some(Duration::new(seconds, 0)))
             .map_err(|_| SmtpErr::Network)?;
-        self.stream()
+        self.stream
             .set_write_timeout(Some(Duration::new(seconds, 0)))
             .map_err(|_| SmtpErr::Network)?;
         Ok(())
@@ -565,7 +562,7 @@ where
         let client = TcpStream::connect_timeout(&address, Duration::new(self.config.timeout, 0))
             .map_err(|_| SmtpErr::ServerUnreachable)?;
 
-        self.stream = Some(client);
+        self.stream = client;
         self.set_time_out(self.config.timeout)?;
 
         let rep = self.recv_line().map_err(|_| SmtpErr::InvalidServer)?;
@@ -618,7 +615,7 @@ where
         self.send(Command::StartTls)?;
         self.recv_line()?.expect(StatusCode::ServiceReady)?;
         let mut con = create_tls_conn(self.server.address.as_str());
-        rustls::Stream::new(&mut con, self.stream());
+        rustls::Stream::new(&mut con, &mut self.stream);
         self.tlscon = Some(con);
         Ok(())
     }
@@ -664,21 +661,16 @@ where
         }
         Ok(())
     }
-    fn close(&mut self) {
-        if let Some(stream) = self.stream.as_mut() {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-        }
-        self.stream.take();
+    fn terminate(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
         self.tlscon.take();
         self.server.meta = ServerMeta::new();
     }
-    fn try_disconnect(&mut self) -> SmtpResult<()> {
-        if self.stream.is_some() {
-            self.send(Command::Quit)?;
-        }
+    fn try_close(&mut self) -> SmtpResult<()> {
+        self.send(Command::Quit)?;
         self.recv_line()?
             .expect(StatusCode::ServiceClosingChannel)?;
-        self.close();
+        self.terminate();
         Ok(())
     }
     fn command_mail_from(&mut self, from: &String) -> SmtpResult<()> {
@@ -783,10 +775,10 @@ where
         }
     }
 
-    pub fn disconnect(&mut self) -> SmtpResult<()> {
+    pub fn close(&mut self) -> SmtpResult<()> {
         let mut retries = self.config.retries;
         loop {
-            match self.try_disconnect() {
+            match self.try_close() {
                 Ok(_) => {
                     return Ok(());
                 }
@@ -819,6 +811,53 @@ where
         }
     }
 }
+
+pub struct Mailer<L>
+where
+    L: Logger,
+{
+    config: Config,
+    server: Server,
+    logger: L,
+}
+
+impl<L> Mailer<L>
+where
+    L: Logger,
+{
+    pub fn new(server: Server, config: Config, logger: L) -> Mailer<L> {
+        Mailer {
+            server,
+            config,
+            logger,
+        }
+    }
+
+    fn address_resolve(&mut self) -> SmtpResult<SocketAddr> {
+        format!("{}:{}", self.server.address, self.server.port)
+            .to_socket_addrs()
+            .map_err(|_| SmtpErr::DNS)?
+            .next()
+            .ok_or(SmtpErr::DNS)
+    }
+
+    pub fn connect(&mut self, credentials: Credentials) -> SmtpResult<MailerConnection<L>> {
+        let address = self.address_resolve()?;
+        let client = TcpStream::connect_timeout(&address, Duration::new(self.config.timeout, 0))
+            .map_err(|_| SmtpErr::ServerUnreachable)?;
+
+        let mut mailer = MailerConnection::new(
+            self.server.clone(),
+            self.config.clone(),
+            client,
+            self.logger.clone(),
+        );
+
+        mailer.connect(credentials)?;
+        Ok(mailer)
+    }
+}
+
 /*
     todo:
         MIME-UTF8

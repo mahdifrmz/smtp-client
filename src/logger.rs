@@ -5,24 +5,28 @@ use std::fs;
 
 pub(crate) struct FileLogger {
     pub(crate) enabled: bool,
+    pub(crate) path: Option<String>,
     pub(crate) file: Option<fs::File>,
     pub(crate) is_client: bool,
     pub(crate) is_server: bool,
 }
 
 impl FileLogger {
-    pub(crate) fn file(path: String) -> FileLogger {
-        let file = fs::OpenOptions::new()
+    fn open(path: String) -> fs::File {
+        fs::OpenOptions::new()
             .truncate(true)
             .write(true)
             .create(true)
             .open(path.clone())
-            .expect(format!("failed to open file: {}", path).as_str());
+            .expect(format!("failed to open file: {}", path).as_str())
+    }
+    pub(crate) fn file(path: String) -> FileLogger {
         FileLogger {
             enabled: true,
-            file: Some(file),
+            file: Some(FileLogger::open(path.clone())),
             is_client: false,
             is_server: false,
+            path: Some(path),
         }
     }
     pub(crate) fn none() -> FileLogger {
@@ -31,6 +35,7 @@ impl FileLogger {
             file: None,
             is_client: false,
             is_server: false,
+            path: None,
         }
     }
     pub(crate) fn new(path: Option<String>) -> FileLogger {
@@ -38,6 +43,23 @@ impl FileLogger {
             FileLogger::file(logfile)
         } else {
             FileLogger::none()
+        }
+    }
+}
+
+impl Clone for FileLogger {
+    fn clone(&self) -> Self {
+        let file = if let Some(path) = self.path.clone() {
+            Some(FileLogger::open(path))
+        } else {
+            None
+        };
+        Self {
+            enabled: self.enabled,
+            path: self.path.clone(),
+            file,
+            is_client: self.is_client,
+            is_server: self.is_server,
         }
     }
 }
