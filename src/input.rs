@@ -71,12 +71,6 @@ impl MailConfig {
         if let Some(value) = self.retries {
             config.retires(value);
         }
-        if let Some(value) = self.parallel {
-            config.parallel(value);
-        }
-        if let Some(value) = self.max_channels {
-            config.max_channels(value);
-        }
         if let Some(value) = self.logfile {
             logfile = Some(value);
         }

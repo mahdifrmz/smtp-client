@@ -1,7 +1,9 @@
 use std::{
+    cmp::min,
     io::{Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
-    sync::Arc,
+    sync::{Arc, Mutex},
+    thread,
     time::Duration,
 };
 
@@ -27,11 +29,29 @@ fn create_tls_conn(server_address: &str) -> TlsCon {
     return TlsCon::new(Arc::new(config), server_address.try_into().unwrap()).unwrap();
 }
 
-pub trait Logger: Clone {
+pub enum SmtpEvent {
+    Connected,
+    FailedToConnect(SmtpErr),
+    Disconnencted,
+    FailToDisconnect(SmtpErr),
+    Retry,
+    MailSent {
+        subject: String,
+        to: String,
+    },
+    FailedToSendMail {
+        subject: String,
+        to: String,
+        error: SmtpErr,
+    },
+}
+
+pub trait Logger: Clone + Send + Sync {
     fn client(&mut self, data: &[u8]);
     fn server(&mut self, data: &[u8]);
     fn disable(&mut self);
     fn enable(&mut self);
+    fn event(&self, event: SmtpEvent);
 }
 
 struct Parser<'a, T, L>
@@ -812,9 +832,10 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct Mailer<L>
 where
-    L: Logger,
+    L: Logger + 'static,
 {
     config: Config,
     server: Server,
@@ -833,7 +854,7 @@ where
         }
     }
 
-    fn address_resolve(&mut self) -> SmtpResult<SocketAddr> {
+    fn address_resolve(&self) -> SmtpResult<SocketAddr> {
         format!("{}:{}", self.server.address, self.server.port)
             .to_socket_addrs()
             .map_err(|_| SmtpErr::DNS)?
@@ -841,7 +862,7 @@ where
             .ok_or(SmtpErr::DNS)
     }
 
-    pub fn connect(&mut self, credentials: Credentials) -> SmtpResult<MailerConnection<L>> {
+    pub fn connect(&self, credentials: Credentials) -> SmtpResult<MailerConnection<L>> {
         let address = self.address_resolve()?;
         let client = TcpStream::connect_timeout(&address, Duration::new(self.config.timeout, 0))
             .map_err(|_| SmtpErr::ServerUnreachable)?;
@@ -856,10 +877,138 @@ where
         mailer.connect(credentials)?;
         Ok(mailer)
     }
-}
 
-/*
-    todo:
-        MIME-UTF8
-        ! dot stuffing
-*/
+    fn post_serial(
+        &self,
+        credentials: Credentials,
+        mails: Vec<Mail>,
+    ) -> SmtpResult<Vec<SmtpResult<()>>> {
+        let mut con = match self.connect(credentials) {
+            Ok(con) => con,
+            Err(e) => {
+                self.logger.event(SmtpEvent::FailedToConnect(e.clone()));
+                return Err(e);
+            }
+        };
+        self.logger.event(SmtpEvent::Connected);
+        let mut mails = mails;
+        let results = mails
+            .drain(..)
+            .map(|mail| {
+                if let Err(e) = con.send_mail(&mail) {
+                    self.logger.event(SmtpEvent::FailedToSendMail {
+                        subject: mail.subject.clone(),
+                        to: mail.to.clone(),
+                        error: e.clone(),
+                    });
+                    Err(e)
+                } else {
+                    self.logger.event(SmtpEvent::MailSent {
+                        subject: mail.subject.clone(),
+                        to: mail.to.clone(),
+                    });
+                    Ok(())
+                }
+            })
+            .collect::<Vec<_>>();
+        match con.close() {
+            Ok(_) => {
+                self.logger.event(SmtpEvent::Disconnencted);
+                Ok(results)
+            }
+            Err(e) => {
+                self.logger.event(SmtpEvent::FailToDisconnect(e));
+                Ok(results)
+            }
+        }
+    }
+
+    fn post_parallel(
+        &self,
+        credentials: Credentials,
+        mails: Vec<Mail>,
+    ) -> SmtpResult<Vec<SmtpResult<()>>> {
+        let mail_count = mails.len();
+        let thread_count = min(self.config.max_channels, mail_count as u32);
+        let mails = Arc::new(Mutex::new(mails));
+        let results = Arc::new(Mutex::new(
+            (0..mail_count).map(|_| Ok(())).collect::<Vec<_>>(),
+        ));
+        let mut handles = (0..thread_count)
+            .map(|_| {
+                let mailer = self.clone();
+                let results = results.clone();
+                let mails = mails.clone();
+                let credentials = credentials.clone();
+                let handle = thread::spawn(move || {
+                    let mut con = match mailer.connect(credentials) {
+                        Ok(con) => con,
+                        Err(e) => {
+                            mailer.logger.event(SmtpEvent::FailedToConnect(e));
+                            return false;
+                        }
+                    };
+                    mailer.logger.event(SmtpEvent::Connected);
+                    loop {
+                        let mut guard = mails.lock().unwrap();
+                        let m = guard.pop();
+                        let idx = guard.len();
+                        drop(guard);
+                        match m {
+                            Some(mail) => {
+                                if let Err(e) = con.send_mail(&mail) {
+                                    mailer.logger.event(SmtpEvent::FailedToSendMail {
+                                        subject: mail.subject.clone(),
+                                        to: mail.to.clone(),
+                                        error: e.clone(),
+                                    });
+                                    results.lock().unwrap()[idx] = Err(e);
+                                } else {
+                                    mailer.logger.event(SmtpEvent::MailSent {
+                                        subject: mail.subject.clone(),
+                                        to: mail.to.clone(),
+                                    });
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    match con.close() {
+                        Ok(_) => {
+                            mailer.logger.event(SmtpEvent::Disconnencted);
+                        }
+                        Err(e) => {
+                            mailer.logger.event(SmtpEvent::FailToDisconnect(e));
+                        }
+                    }
+                    return true;
+                });
+                handle
+            })
+            .collect::<Vec<_>>();
+
+        if handles
+            .drain(..)
+            .map(|h| h.join().unwrap())
+            .fold(false, |a, b| a || b)
+        {
+            let mut results = Arc::try_unwrap(results).unwrap();
+            let results = std::mem::take(results.get_mut().unwrap());
+            Ok(results)
+        } else {
+            Err(SmtpErr::ServerUnreachable)
+        }
+    }
+
+    pub fn post(
+        &self,
+        credentials: Credentials,
+        mails: Vec<Mail>,
+    ) -> SmtpResult<Vec<SmtpResult<()>>> {
+        if !self.config.parallel {
+            self.post_serial(credentials, mails)
+        } else {
+            self.post_parallel(credentials, mails)
+        }
+    }
+}
