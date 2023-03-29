@@ -411,3 +411,11 @@ where
         }
     }
 }
+
+impl<L: Logger> Drop for MailerConnection<L> {
+    fn drop(&mut self) {
+        if self.config.auto_quit {
+            let _ = self.close();
+        }
+    }
+}

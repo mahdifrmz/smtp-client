@@ -99,6 +99,7 @@ pub struct Config {
     pub timeout: u64,
     pub parallel: bool,
     pub max_channels: u32,
+    pub auto_quit: bool,
 }
 
 impl Config {
@@ -108,6 +109,7 @@ impl Config {
             timeout: 5,
             parallel: false,
             max_channels: 8,
+            auto_quit: false,
         }
     }
     pub fn retires<'a>(&'a mut self, value: u32) -> &'a mut Config {
@@ -124,6 +126,10 @@ impl Config {
     }
     pub fn max_channels<'a>(&'a mut self, value: u32) -> &'a mut Config {
         self.max_channels = value;
+        self
+    }
+    pub fn auto_quit<'a>(&'a mut self, value: bool) -> &'a mut Config {
+        self.auto_quit = value;
         self
     }
 }
