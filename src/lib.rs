@@ -1,5 +1,5 @@
 mod connection;
-mod mail;
+mod message;
 use std::{
     cmp::min,
     net::{SocketAddr, TcpStream, ToSocketAddrs},
@@ -9,7 +9,7 @@ use std::{
 };
 
 use connection::MailerConnection;
-pub use mail::Mail;
+pub use message::Mail;
 
 pub enum SmtpEvent {
     Connected,

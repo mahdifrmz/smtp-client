@@ -306,8 +306,6 @@ where
     pub(crate) fn command_mail_payload(&mut self, mail: &Mail) -> SmtpResult<()> {
         if self.server.meta.eight_bit_mime == Support::Supported {
             self.write(mail.to_bytes()?.as_slice())?;
-        } else if mail.attachments.len() > 0 {
-            return Err(SmtpErr::MIMENotSupported);
         } else {
             self.write(
                 format!(
@@ -342,6 +340,9 @@ where
     pub(crate) fn try_send_mail(&mut self, mail: &Mail) -> SmtpResult<()> {
         check_address(mail.from.as_str())?;
         check_address(mail.to.as_str())?;
+        if mail.attachments.len() > 0 && self.server.meta.eight_bit_mime != Support::Supported {
+            return Err(SmtpErr::MIMENotSupported);
+        }
         if self.server.meta.pipelining == Support::Supported {
             self.command_mail_from(&mail.from)?;
             self.command_mail_to(&mail.to)?;

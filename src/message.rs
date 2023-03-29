@@ -12,6 +12,15 @@ pub struct Mail {
     pub attachments: Vec<String>,
 }
 
+fn path_file_name(path: &String) -> String {
+    std::path::PathBuf::from(path)
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
 impl Mail {
     pub fn to_bytes(&self) -> SmtpResult<Vec<u8>> {
         let mut builder = MessageBuilder::new()
@@ -27,7 +36,14 @@ impl Mail {
             .text_body(self.text.as_str());
         for att in self.attachments.iter() {
             let content = fs::read(att).map_err(|_| SmtpErr::File(att.clone()))?;
-            builder = builder.binary_attachment("image/png", att, content);
+            builder = builder.binary_attachment(
+                infer::get_from_path(att)
+                    .map_err(|_| SmtpErr::File(att.clone()))?
+                    .unwrap()
+                    .to_string(),
+                path_file_name(att),
+                content,
+            );
         }
         Ok(builder.write_to_vec().unwrap())
     }
