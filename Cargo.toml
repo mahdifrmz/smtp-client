@@ -13,6 +13,7 @@ toml = "0.7.3"
 serde = "1.0.158"
 serde_derive = "1.0.158"
 rpassword = "7.2"
+mail-builder = "0.2.5"
 
 [dependencies.regex]
 version = "1.3"

@@ -1,6 +1,7 @@
 use serde_derive::Deserialize;
+use smtp::Mail;
 
-use crate::{Config, Credentials, Mail, Server};
+use crate::{Config, Credentials, Server};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

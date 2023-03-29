@@ -1,5 +1,5 @@
 mod connection;
-
+mod mail;
 use std::{
     cmp::min,
     net::{SocketAddr, TcpStream, ToSocketAddrs},
@@ -9,6 +9,7 @@ use std::{
 };
 
 use connection::MailerConnection;
+pub use mail::Mail;
 
 pub enum SmtpEvent {
     Connected,
@@ -44,6 +45,7 @@ pub enum SmtpErr {
     Network,
     InvalidCred,
     Policy,
+    MIMENotSupported,
     DNS,
     MailBoxName(String),
     Forward(String),
@@ -63,16 +65,6 @@ impl SmtpErr {
 }
 
 type SmtpResult<T> = Result<T, SmtpErr>;
-
-pub struct Mail {
-    pub subject: String,
-    pub from: String,
-    pub from_name: Option<String>,
-    pub to: String,
-    pub to_name: Option<String>,
-    pub text: String,
-    pub attachments: Vec<String>,
-}
 
 #[derive(Clone)]
 pub struct Credentials {
@@ -143,7 +135,7 @@ enum Support {
 
 #[derive(Clone, Copy)]
 struct ServerMeta {
-    utf8: Support,
+    eight_bit_mime: Support,
     auth_plain: Support,
     auth_login: Support,
     tls: Support,
@@ -163,7 +155,7 @@ impl Server {
 impl ServerMeta {
     fn new() -> ServerMeta {
         ServerMeta {
-            utf8: Support::Unknown,
+            eight_bit_mime: Support::Unknown,
             auth_plain: Support::Unknown,
             auth_login: Support::Unknown,
             tls: Support::Unknown,
