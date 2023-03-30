@@ -22,6 +22,9 @@ fn path_file_name(path: &String) -> String {
 }
 
 impl Mail {
+    pub fn final_text(&self) -> String {
+        self.text.replace(".\r\n", "..\r\n")
+    }
     pub fn to_bytes(&self) -> SmtpResult<Vec<u8>> {
         let mut builder = MessageBuilder::new()
             .from((
@@ -33,7 +36,7 @@ impl Mail {
                 self.to.clone(),
             ))
             .subject(self.subject.as_str())
-            .text_body(self.text.as_str());
+            .text_body(self.final_text());
         for att in self.attachments.iter() {
             let content = fs::read(att).map_err(|_| SmtpErr::File(att.clone()))?;
             builder = builder.binary_attachment(

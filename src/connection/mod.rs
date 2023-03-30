@@ -325,7 +325,7 @@ where
             )?;
             self.write(format!("Subject: {}\r\n", mail.subject).as_bytes())?;
             self.write("\r\n".as_bytes())?;
-            self.write(mail.text.as_bytes())?;
+            self.write(mail.final_text().as_bytes())?;
         }
         self.write("\r\n.\r\n".as_bytes())
     }
