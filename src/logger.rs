@@ -72,6 +72,9 @@ impl FileLogger {
             SmtpErr::MailBoxName(mailbox) => format!("Invalid email address <{}>", mailbox),
             SmtpErr::ServerUnreachable => "Can't reach the server, try again later.".to_string(),
             SmtpErr::ServerUnavailable => "Server abruptly ended the connection.".to_string(),
+            SmtpErr::MIMENotSupported => {
+                "MIME not supported by server. Can't send attachments.".to_string()
+            }
             SmtpErr::InvalidServer => {
                 "The server address you entered probably is not an SMTP one.".to_string()
             }

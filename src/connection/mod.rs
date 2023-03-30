@@ -191,7 +191,7 @@ where
             if text == EhloLine::StartTls.to_string() {
                 self.server.meta.tls = Support::Supported;
             } else if text == EhloLine::EightBitMIME.to_string() {
-                self.server.meta.utf8 = Support::Supported
+                self.server.meta.eight_bit_mime = Support::Supported
             } else if text == EhloLine::Pipelining.to_string() {
                 self.server.meta.pipelining = Support::Supported;
             } else {
@@ -304,25 +304,29 @@ where
         self.recv_line()?.expect(StatusCode::StartMailInput)
     }
     pub(crate) fn command_mail_payload(&mut self, mail: &Mail) -> SmtpResult<()> {
-        self.write(
-            format!(
-                "From: {}<{}>\r\n",
-                mail.from_name.as_ref().unwrap_or(&"".to_string()),
-                mail.from
-            )
-            .as_bytes(),
-        )?;
-        self.write(
-            format!(
-                "To: {}<{}>\r\n",
-                mail.to_name.as_ref().unwrap_or(&"".to_string()),
-                mail.to
-            )
-            .as_bytes(),
-        )?;
-        self.write(format!("Subject: {}\r\n", mail.subject).as_bytes())?;
-        self.write("\r\n".as_bytes())?;
-        self.write(mail.text.as_bytes())?;
+        if self.server.meta.eight_bit_mime == Support::Supported {
+            self.write(mail.to_bytes()?.as_slice())?;
+        } else {
+            self.write(
+                format!(
+                    "From: {}<{}>\r\n",
+                    mail.from_name.as_ref().unwrap_or(&"".to_string()),
+                    mail.from
+                )
+                .as_bytes(),
+            )?;
+            self.write(
+                format!(
+                    "To: {}<{}>\r\n",
+                    mail.to_name.as_ref().unwrap_or(&"".to_string()),
+                    mail.to
+                )
+                .as_bytes(),
+            )?;
+            self.write(format!("Subject: {}\r\n", mail.subject).as_bytes())?;
+            self.write("\r\n".as_bytes())?;
+            self.write(mail.final_text().as_bytes())?;
+        }
         self.write("\r\n.\r\n".as_bytes())
     }
     pub(crate) fn reply_mail_payload(&mut self) -> SmtpResult<()> {
@@ -336,6 +340,9 @@ where
     pub(crate) fn try_send_mail(&mut self, mail: &Mail) -> SmtpResult<()> {
         check_address(mail.from.as_str())?;
         check_address(mail.to.as_str())?;
+        if mail.attachments.len() > 0 && self.server.meta.eight_bit_mime != Support::Supported {
+            return Err(SmtpErr::MIMENotSupported);
+        }
         if self.config.pipeline && self.server.meta.pipelining == Support::Supported {
             self.command_mail_from(&mail.from)?;
             self.command_mail_to(&mail.to)?;

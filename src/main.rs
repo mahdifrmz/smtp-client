@@ -2,7 +2,7 @@ mod input;
 mod logger;
 
 use input::MailFile;
-use smtp::{Config, Credentials, Mail, Mailer, Server};
+use smtp::{Config, Credentials, Mailer, Server};
 use std::{env::args, fs, process::exit};
 
 use crate::logger::FileLogger;
