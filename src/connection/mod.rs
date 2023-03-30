@@ -336,7 +336,7 @@ where
     pub(crate) fn try_send_mail(&mut self, mail: &Mail) -> SmtpResult<()> {
         check_address(mail.from.as_str())?;
         check_address(mail.to.as_str())?;
-        if self.server.meta.pipelining == Support::Supported {
+        if self.config.pipeline && self.server.meta.pipelining == Support::Supported {
             self.command_mail_from(&mail.from)?;
             self.command_mail_to(&mail.to)?;
             self.command_mail_data()?;

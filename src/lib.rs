@@ -100,6 +100,7 @@ pub struct Config {
     pub parallel: bool,
     pub max_channels: u32,
     pub auto_quit: bool,
+    pub pipeline: bool,
 }
 
 impl Config {
@@ -110,6 +111,7 @@ impl Config {
             parallel: false,
             max_channels: 8,
             auto_quit: false,
+            pipeline: true,
         }
     }
     pub fn retires<'a>(&'a mut self, value: u32) -> &'a mut Config {
@@ -130,6 +132,10 @@ impl Config {
     }
     pub fn auto_quit<'a>(&'a mut self, value: bool) -> &'a mut Config {
         self.auto_quit = value;
+        self
+    }
+    pub fn pipeline<'a>(&'a mut self, value: bool) -> &'a mut Config {
+        self.pipeline = value;
         self
     }
 }

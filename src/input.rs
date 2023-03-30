@@ -9,6 +9,7 @@ pub struct MailConfig {
     pub timeout: Option<u64>,
     pub parallel: Option<bool>,
     pub logfile: Option<String>,
+    pub pipeline: Option<bool>,
     #[serde(rename = "max-channels")]
     pub max_channels: Option<u32>,
 }
@@ -76,6 +77,9 @@ impl MailConfig {
         }
         if let Some(value) = self.max_channels {
             config.max_channels(value);
+        }
+        if let Some(value) = self.pipeline {
+            config.pipeline(value);
         }
         if let Some(value) = self.logfile {
             logfile = Some(value);
