@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose, Engine};
 
-use crate::{SmtpErr, SmtpResult};
+use crate::{Error, Result};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum StatusCode {
@@ -87,9 +87,9 @@ impl Line {
         Line { code, text, last }
     }
 
-    pub fn expect(&self, code: StatusCode) -> SmtpResult<()> {
+    pub fn expect(&self, code: StatusCode) -> Result<()> {
         if self.code != code {
-            Err(SmtpErr::Protocol)
+            Err(Error::Protocol)
         } else {
             Ok(())
         }

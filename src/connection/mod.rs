@@ -2,8 +2,7 @@ mod parser;
 mod protocol;
 
 use super::{
-    check_address, Config, Credentials, Logger, Mail, Server, ServerMeta, SmtpErr, SmtpResult,
-    Support,
+    check_address, Config, Credentials, Error, Logger, Mail, Result, Server, ServerMeta, Support,
 };
 use protocol::{get_auth_login, AuthMech, Command, EhloLine, Line, StatusCode};
 use rustls;
@@ -33,14 +32,14 @@ fn create_tls_conn(server_address: &str) -> TlsCon {
     return TlsCon::new(Arc::new(config), server_address.try_into().unwrap()).unwrap();
 }
 
-fn stream_recv_reply<T>(stream: &mut T, logger: &mut impl Logger) -> SmtpResult<Vec<Line>>
+fn stream_recv_reply<T>(stream: &mut T, logger: &mut impl Logger) -> Result<Vec<Line>>
 where
     T: Read,
 {
     let mut parser = parser::Parser::new(stream, logger);
     parser.recv_reply()
 }
-fn stream_recv_line<T>(stream: &mut T, logger: &mut impl Logger) -> SmtpResult<Line>
+fn stream_recv_line<T>(stream: &mut T, logger: &mut impl Logger) -> Result<Line>
 where
     T: Read,
 {
@@ -83,7 +82,7 @@ where
             logger,
         }
     }
-    pub(crate) fn recv_reply(&mut self) -> SmtpResult<Vec<Line>> {
+    pub(crate) fn recv_reply(&mut self) -> Result<Vec<Line>> {
         let lines = if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
             let mut tls = rustls::Stream::new(&mut tlscon, &mut self.stream);
@@ -98,12 +97,12 @@ where
                 || l.code() == StatusCode::TransactionFailed
             {
                 self.terminate();
-                return Err(SmtpErr::ServerUnavailable);
+                return Err(Error::ServerUnavailable);
             }
         }
         Ok(lines)
     }
-    pub(crate) fn recv_line(&mut self) -> SmtpResult<Line> {
+    pub(crate) fn recv_line(&mut self) -> Result<Line> {
         let line = if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
             let mut tls = rustls::Stream::new(&mut tlscon, &mut self.stream);
@@ -117,57 +116,57 @@ where
             || line.code() == StatusCode::TransactionFailed
         {
             self.terminate();
-            Err(SmtpErr::ServerUnavailable)
+            Err(Error::ServerUnavailable)
         } else {
             Ok(line)
         }
     }
-    pub(crate) fn write(&mut self, data: &[u8]) -> SmtpResult<()> {
+    pub(crate) fn write(&mut self, data: &[u8]) -> Result<()> {
         self.logger.client(data);
         if self.is_tls() {
             let mut tlscon = self.tlscon.take().unwrap();
             rustls::Stream::new(&mut tlscon, &mut self.stream)
                 .write(data)
-                .map_err(|_| SmtpErr::Network)?;
+                .map_err(|_| Error::Network)?;
             self.tlscon = Some(tlscon);
         } else {
-            self.stream.write(data).map_err(|_| SmtpErr::Network)?;
+            self.stream.write(data).map_err(|_| Error::Network)?;
         }
         Ok(())
     }
-    pub(crate) fn send(&mut self, cmd: Command) -> SmtpResult<()> {
+    pub(crate) fn send(&mut self, cmd: Command) -> Result<()> {
         self.write(cmd.to_string().as_bytes())
     }
-    pub(crate) fn set_time_out(&mut self, seconds: u64) -> SmtpResult<()> {
+    pub(crate) fn set_time_out(&mut self, seconds: u64) -> Result<()> {
         self.stream
             .set_read_timeout(Some(Duration::new(seconds, 0)))
-            .map_err(|_| SmtpErr::Network)?;
+            .map_err(|_| Error::Network)?;
         self.stream
             .set_write_timeout(Some(Duration::new(seconds, 0)))
-            .map_err(|_| SmtpErr::Network)?;
+            .map_err(|_| Error::Network)?;
         Ok(())
     }
 
-    pub(crate) fn address_resolve(&mut self) -> SmtpResult<SocketAddr> {
+    pub(crate) fn address_resolve(&mut self) -> Result<SocketAddr> {
         format!("{}:{}", self.server.address, self.server.port)
             .to_socket_addrs()
-            .map_err(|_| SmtpErr::DNS)?
+            .map_err(|_| Error::DNS)?
             .next()
-            .ok_or(SmtpErr::DNS)
+            .ok_or(Error::DNS)
     }
 
-    pub(crate) fn init_connection(&mut self) -> SmtpResult<()> {
+    pub(crate) fn init_connection(&mut self) -> Result<()> {
         let address = self.address_resolve()?;
 
         let client = TcpStream::connect_timeout(&address, Duration::new(self.config.timeout, 0))
-            .map_err(|_| SmtpErr::ServerUnreachable)?;
+            .map_err(|_| Error::ServerUnreachable)?;
 
         self.stream = client;
         self.set_time_out(self.config.timeout)?;
 
-        let rep = self.recv_line().map_err(|_| SmtpErr::InvalidServer)?;
+        let rep = self.recv_line().map_err(|_| Error::InvalidServer)?;
         if rep.code() != StatusCode::ServiceReady {
-            Err(SmtpErr::Protocol)
+            Err(Error::Protocol)
         } else {
             Ok(())
         }
@@ -175,7 +174,7 @@ where
     pub(crate) fn is_tls(&self) -> bool {
         self.tlscon.is_some()
     }
-    pub(crate) fn handshake(&mut self) -> SmtpResult<()> {
+    pub(crate) fn handshake(&mut self) -> Result<()> {
         let name = self.name.clone();
 
         self.send(Command::Ehlo(name.clone()))?;
@@ -211,7 +210,7 @@ where
         }
         Ok(())
     }
-    pub(crate) fn start_tls(&mut self) -> SmtpResult<()> {
+    pub(crate) fn start_tls(&mut self) -> Result<()> {
         self.send(Command::StartTls)?;
         self.recv_line()?.expect(StatusCode::ServiceReady)?;
         let mut con = create_tls_conn(self.server.address.as_str());
@@ -219,25 +218,25 @@ where
         self.tlscon = Some(con);
         Ok(())
     }
-    pub(crate) fn reply_auth_result(&mut self) -> SmtpResult<()> {
+    pub(crate) fn reply_auth_result(&mut self) -> Result<()> {
         let cc = self.recv_line()?.code();
         match cc {
             StatusCode::AuthSuccess => Ok(()),
-            StatusCode::AuthInvalidCred | StatusCode::NoAccess => Err(SmtpErr::InvalidCred),
-            _ => Err(SmtpErr::Protocol),
+            StatusCode::AuthInvalidCred | StatusCode::NoAccess => Err(Error::InvalidCred),
+            _ => Err(Error::Protocol),
         }
     }
-    pub(crate) fn auth_plain(&mut self, credentials: Credentials) -> SmtpResult<()> {
+    pub(crate) fn auth_plain(&mut self, credentials: Credentials) -> Result<()> {
         self.send(Command::AuthPlain(
             credentials.username.clone(),
             credentials.password.clone(),
         ))?;
         self.reply_auth_result()
     }
-    pub(crate) fn end(&mut self) -> SmtpResult<()> {
+    pub(crate) fn end(&mut self) -> Result<()> {
         self.write("\r\n".as_bytes())
     }
-    pub(crate) fn auth_login(&mut self, credentials: Credentials) -> SmtpResult<()> {
+    pub(crate) fn auth_login(&mut self, credentials: Credentials) -> Result<()> {
         self.send(Command::AuthLogin)?;
         self.recv_line()?.expect(StatusCode::ServerChallenge)?;
         self.write(get_auth_login(credentials.username.as_str()).as_bytes())?;
@@ -247,7 +246,7 @@ where
         self.end()?;
         self.reply_auth_result()
     }
-    pub(crate) fn try_connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
+    pub(crate) fn try_connect(&mut self, credentials: Credentials) -> Result<()> {
         self.init_connection()?;
         self.handshake()?;
         if self.server.meta.tls == Support::Supported {
@@ -266,44 +265,44 @@ where
         self.tlscon.take();
         self.server.meta = ServerMeta::new();
     }
-    pub(crate) fn try_close(&mut self) -> SmtpResult<()> {
+    pub(crate) fn try_close(&mut self) -> Result<()> {
         self.send(Command::Quit)?;
         self.recv_line()?
             .expect(StatusCode::ServiceClosingChannel)?;
         self.terminate();
         Ok(())
     }
-    pub(crate) fn command_mail_from(&mut self, from: &String) -> SmtpResult<()> {
+    pub(crate) fn command_mail_from(&mut self, from: &String) -> Result<()> {
         self.send(Command::MailFrom(from.clone()))
     }
-    pub(crate) fn reply_mail_from(&mut self, from: &String) -> SmtpResult<()> {
+    pub(crate) fn reply_mail_from(&mut self, from: &String) -> Result<()> {
         match self.recv_line()?.code() {
             StatusCode::Okay => Ok(()),
-            StatusCode::NoAccess => Err(SmtpErr::Policy),
-            StatusCode::MailBoxNameNotAllowed => Err(SmtpErr::MailBoxName(from.to_string())),
-            _ => Err(SmtpErr::Protocol),
+            StatusCode::NoAccess => Err(Error::Policy),
+            StatusCode::MailBoxNameNotAllowed => Err(Error::MailBoxName(from.to_string())),
+            _ => Err(Error::Protocol),
         }
     }
-    pub(crate) fn command_mail_to(&mut self, to: &String) -> SmtpResult<()> {
+    pub(crate) fn command_mail_to(&mut self, to: &String) -> Result<()> {
         self.send(Command::RcptTo(to.clone()))
     }
-    pub(crate) fn reply_mail_to(&mut self, to: &String) -> SmtpResult<()> {
+    pub(crate) fn reply_mail_to(&mut self, to: &String) -> Result<()> {
         let line = self.recv_line()?;
         match line.code() {
             StatusCode::Okay | StatusCode::UserNotLocal => Ok(()),
-            StatusCode::NoAccess | StatusCode::MailboxUnavailable => Err(SmtpErr::Policy),
-            StatusCode::MailBoxNameNotAllowed => Err(SmtpErr::MailBoxName(to.to_string())),
-            StatusCode::UserNotLocalError => Err(SmtpErr::Forward(line.text().clone())),
-            _ => Err(SmtpErr::Protocol),
+            StatusCode::NoAccess | StatusCode::MailboxUnavailable => Err(Error::Policy),
+            StatusCode::MailBoxNameNotAllowed => Err(Error::MailBoxName(to.to_string())),
+            StatusCode::UserNotLocalError => Err(Error::Forward(line.text().clone())),
+            _ => Err(Error::Protocol),
         }
     }
-    pub(crate) fn command_mail_data(&mut self) -> SmtpResult<()> {
+    pub(crate) fn command_mail_data(&mut self) -> Result<()> {
         self.send(Command::Data)
     }
-    pub(crate) fn reply_mail_data(&mut self) -> SmtpResult<()> {
+    pub(crate) fn reply_mail_data(&mut self) -> Result<()> {
         self.recv_line()?.expect(StatusCode::StartMailInput)
     }
-    pub(crate) fn command_mail_payload(&mut self, mail: &Mail) -> SmtpResult<()> {
+    pub(crate) fn command_mail_payload(&mut self, mail: &Mail) -> Result<()> {
         if self.server.meta.eight_bit_mime == Support::Supported {
             self.write(mail.to_bytes()?.as_slice())?;
         } else {
@@ -329,19 +328,19 @@ where
         }
         self.write("\r\n.\r\n".as_bytes())
     }
-    pub(crate) fn reply_mail_payload(&mut self) -> SmtpResult<()> {
+    pub(crate) fn reply_mail_payload(&mut self) -> Result<()> {
         match self.recv_line()?.code() {
             StatusCode::Okay => Ok(()),
-            StatusCode::NoAccess | StatusCode::MailboxUnavailable => Err(SmtpErr::Policy),
-            _ => Err(SmtpErr::Protocol),
+            StatusCode::NoAccess | StatusCode::MailboxUnavailable => Err(Error::Policy),
+            _ => Err(Error::Protocol),
         }
     }
 
-    pub(crate) fn try_send_mail(&mut self, mail: &Mail) -> SmtpResult<()> {
+    pub(crate) fn try_send_mail(&mut self, mail: &Mail) -> Result<()> {
         check_address(mail.from.as_str())?;
         check_address(mail.to.as_str())?;
         if mail.attachments.len() > 0 && self.server.meta.eight_bit_mime != Support::Supported {
-            return Err(SmtpErr::MIMENotSupported);
+            return Err(Error::MIMENotSupported);
         }
         if self.config.pipeline && self.server.meta.pipelining == Support::Supported {
             self.command_mail_from(&mail.from)?;
@@ -364,7 +363,7 @@ where
         }
     }
 
-    pub fn connect(&mut self, credentials: Credentials) -> SmtpResult<()> {
+    pub fn connect(&mut self, credentials: Credentials) -> Result<()> {
         let mut retries = self.config.retries;
         loop {
             match self.try_connect(credentials.clone()) {
@@ -382,7 +381,7 @@ where
         }
     }
 
-    pub fn close(&mut self) -> SmtpResult<()> {
+    pub fn close(&mut self) -> Result<()> {
         let mut retries = self.config.retries;
         loop {
             match self.try_close() {
@@ -400,7 +399,7 @@ where
         }
     }
 
-    pub fn send_mail(&mut self, mail: &Mail) -> SmtpResult<()> {
+    pub fn send_mail(&mut self, mail: &Mail) -> Result<()> {
         let mut retries = self.config.retries;
         loop {
             match self.try_send_mail(&mail) {

@@ -1,4 +1,4 @@
-use crate::{SmtpErr, SmtpResult};
+use crate::{Error, Result};
 use mail_builder::MessageBuilder;
 use std::fs;
 
@@ -25,7 +25,7 @@ impl Mail {
     pub fn final_text(&self) -> String {
         self.text.replace(".\r\n", "..\r\n")
     }
-    pub fn to_bytes(&self) -> SmtpResult<Vec<u8>> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut builder = MessageBuilder::new()
             .from((
                 self.from_name.clone().unwrap_or("".to_owned()),
@@ -38,10 +38,10 @@ impl Mail {
             .subject(self.subject.as_str())
             .text_body(self.final_text());
         for att in self.attachments.iter() {
-            let content = fs::read(att).map_err(|_| SmtpErr::File(att.clone()))?;
+            let content = fs::read(att).map_err(|_| Error::File(att.clone()))?;
             builder = builder.binary_attachment(
                 infer::get_from_path(att)
-                    .map_err(|_| SmtpErr::File(att.clone()))?
+                    .map_err(|_| Error::File(att.clone()))?
                     .unwrap()
                     .to_string(),
                 path_file_name(att),

@@ -1,4 +1,4 @@
-use smtp::{Logger, SmtpErr, SmtpEvent};
+use smtp::{Error, Event, Logger};
 use std::io::Write;
 
 use std::fs;
@@ -65,28 +65,28 @@ impl Clone for FileLogger {
 }
 
 impl FileLogger {
-    fn get_error_message(&self, error: SmtpErr) -> String {
+    fn get_error_message(&self, error: Error) -> String {
         match error {
-            SmtpErr::File(path) => format!("Failed to open file: {}", path),
-            SmtpErr::Protocol => "There was an error on the mail server side.".to_string(),
-            SmtpErr::MailBoxName(mailbox) => format!("Invalid email address <{}>", mailbox),
-            SmtpErr::ServerUnreachable => "Can't reach the server, try again later.".to_string(),
-            SmtpErr::ServerUnavailable => "Server abruptly ended the connection.".to_string(),
-            SmtpErr::MIMENotSupported => {
+            Error::File(path) => format!("Failed to open file: {}", path),
+            Error::Protocol => "There was an error on the mail server side.".to_string(),
+            Error::MailBoxName(mailbox) => format!("Invalid email address <{}>", mailbox),
+            Error::ServerUnreachable => "Can't reach the server, try again later.".to_string(),
+            Error::ServerUnavailable => "Server abruptly ended the connection.".to_string(),
+            Error::MIMENotSupported => {
                 "MIME not supported by server. Can't send attachments.".to_string()
             }
-            SmtpErr::InvalidServer => {
+            Error::InvalidServer => {
                 "The server address you entered probably is not an SMTP one.".to_string()
             }
-            SmtpErr::Network => "Disconnected due to a network issues.".to_string(),
-            SmtpErr::DNS => "Failed to resolve hostname.".to_string(),
-            SmtpErr::InvalidCred => "The credentials you entered were invalidated by the server. \
+            Error::Network => "Disconnected due to a network issues.".to_string(),
+            Error::DNS => "Failed to resolve hostname.".to_string(),
+            Error::InvalidCred => "The credentials you entered were invalidated by the server. \
     Make sure about the entered username and password."
                 .to_string(),
-            SmtpErr::Policy => "The Mail request was rejected by the server due to some policy. \
+            Error::Policy => "The Mail request was rejected by the server due to some policy. \
     Can't send the mail."
                 .to_string(),
-            SmtpErr::Forward(mes) => format!(
+            Error::Forward(mes) => format!(
                 "The entered address was an old one. \
     Here's the message from the server: {}",
                 mes
@@ -101,7 +101,7 @@ impl FileLogger {
     fn event_disconnect(&self) {
         println!("connection closed.");
     }
-    fn event_connection_failed(&self, error: SmtpErr) {
+    fn event_connection_failed(&self, error: Error) {
         eprintln!(
             "connecting failed:\n{}",
             self.get_error_message(error.clone())
@@ -110,7 +110,7 @@ impl FileLogger {
     fn event_mail_sent(&self, subject: String, to: String) {
         println!("--> sent [{}] to <{}>.", subject, to);
     }
-    fn event_mail_failed(&self, subject: String, to: String, error: SmtpErr) {
+    fn event_mail_failed(&self, subject: String, to: String, error: Error) {
         eprintln!(
             "--> sending [{}] to <{}> failed:\n{}",
             subject,
@@ -158,16 +158,16 @@ impl Logger for FileLogger {
         }
     }
 
-    fn event(&self, event: SmtpEvent) {
+    fn event(&self, event: Event) {
         if self.enabled {
             match event {
-                SmtpEvent::Connected => self.event_connected(),
-                SmtpEvent::FailedToConnect(e) => self.event_connection_failed(e),
-                SmtpEvent::Disconnencted => self.event_disconnect(),
-                SmtpEvent::FailToDisconnect(_) => (),
-                SmtpEvent::Retry => self.event_retrying(),
-                SmtpEvent::MailSent { subject, to } => self.event_mail_sent(subject, to),
-                SmtpEvent::FailedToSendMail { subject, to, error } => {
+                Event::Connected => self.event_connected(),
+                Event::FailedToConnect(e) => self.event_connection_failed(e),
+                Event::Disconnencted => self.event_disconnect(),
+                Event::FailToDisconnect(_) => (),
+                Event::Retry => self.event_retrying(),
+                Event::MailSent { subject, to } => self.event_mail_sent(subject, to),
+                Event::FailedToSendMail { subject, to, error } => {
                     self.event_mail_failed(subject, to, error)
                 }
             }

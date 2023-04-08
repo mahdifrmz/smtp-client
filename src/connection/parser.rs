@@ -1,6 +1,6 @@
 use super::{
     protocol::{status_code, Line},
-    Logger, SmtpErr, SmtpResult,
+    Error, Logger, Result,
 };
 use std::io::Read;
 
@@ -19,9 +19,9 @@ where
     T: Read,
     L: Logger,
 {
-    pub(crate) fn recv_char(&mut self) -> SmtpResult<char> {
+    pub(crate) fn recv_char(&mut self) -> Result<char> {
         let mut buf = [0u8; 1];
-        self.stream.read(&mut buf).map_err(|_| SmtpErr::Network)?;
+        self.stream.read(&mut buf).map_err(|_| Error::Network)?;
         let c = self.next_char;
         self.next_char = buf[0] as char;
         self.logger.server(&buf);
@@ -30,31 +30,31 @@ where
     pub(crate) fn peek_char(&mut self) -> char {
         self.next_char
     }
-    pub(crate) fn recv_digit(&mut self) -> SmtpResult<u8> {
+    pub(crate) fn recv_digit(&mut self) -> Result<u8> {
         let c = self.recv_char()?;
         if c > '9' || c < '0' {
-            Err(SmtpErr::Protocol)
+            Err(Error::Protocol)
         } else {
             Ok((c as u8) - ('0' as u8))
         }
     }
-    pub(crate) fn expect_char(&mut self, exp: char) -> SmtpResult<()> {
+    pub(crate) fn expect_char(&mut self, exp: char) -> Result<()> {
         let c = self.recv_char()?;
         if c == exp {
             Ok(())
         } else {
-            Err(SmtpErr::Protocol)
+            Err(Error::Protocol)
         }
     }
-    pub(crate) fn expect_end(&mut self) -> SmtpResult<()> {
+    pub(crate) fn expect_end(&mut self) -> Result<()> {
         self.expect_char('\r')?;
         if self.peek_char() == '\n' {
             Ok(())
         } else {
-            Err(SmtpErr::Protocol)
+            Err(Error::Protocol)
         }
     }
-    pub(crate) fn recv_text(&mut self) -> SmtpResult<String> {
+    pub(crate) fn recv_text(&mut self) -> Result<String> {
         let mut text = String::new();
         loop {
             let c = self.recv_char()?;
@@ -65,7 +65,7 @@ where
             }
         }
     }
-    pub(crate) fn recv_line(&mut self) -> SmtpResult<Line> {
+    pub(crate) fn recv_line(&mut self) -> Result<Line> {
         self.recv_char()?;
         let d1 = self.recv_digit()? as u32;
         let d2 = self.recv_digit()? as u32;
@@ -80,12 +80,12 @@ where
             String::new()
         };
         Ok(Line::new(
-            status_code(code).ok_or_else(|| SmtpErr::Protocol)?,
+            status_code(code).ok_or_else(|| Error::Protocol)?,
             text,
             next == ' ',
         ))
     }
-    pub(crate) fn recv_reply(&mut self) -> SmtpResult<Vec<Line>> {
+    pub(crate) fn recv_reply(&mut self) -> Result<Vec<Line>> {
         let mut lines = vec![self.recv_line()?];
         while !lines[lines.len() - 1].last() {
             lines.push(self.recv_line()?);
