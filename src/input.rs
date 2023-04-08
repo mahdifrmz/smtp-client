@@ -18,8 +18,7 @@ pub struct MailConfig {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MailEntry {
-    address: String,
-    name: Option<String>,
+    to: Vec<(String, String)>,
     subject: String,
     text: String,
     attach: Option<Vec<String>>,
@@ -122,16 +121,18 @@ impl MailFile {
 
         if let Some(mut file_mails) = self.mails.take() {
             for m in file_mails.drain(..) {
-                let mail = Mail {
-                    from: self.user.address.clone(),
-                    from_name: self.user.name.clone(),
-                    to: m.address,
-                    to_name: m.name,
-                    subject: m.subject,
-                    text: m.text,
-                    attachments: m.attach.unwrap_or(vec![]),
-                };
-                mails.push(mail);
+                for (to_name, to) in m.to.iter().cloned() {
+                    let mail = Mail {
+                        from: self.user.address.clone(),
+                        from_name: self.user.name.clone(),
+                        to,
+                        to_name: Some(to_name),
+                        subject: m.subject.clone(),
+                        text: m.text.clone(),
+                        attachments: m.attach.clone().unwrap_or(vec![]),
+                    };
+                    mails.push(mail);
+                }
             }
         }
         (
